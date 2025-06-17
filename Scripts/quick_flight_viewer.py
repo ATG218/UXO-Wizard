@@ -2,7 +2,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
 
-def quick_flight_path_view(csv_file='test4.csv'):
+def quick_flight_path_view(csv_file='concentrations_tarva_clean.csv'):
     """Create a quick visualization of the flight path to help identify cut points."""
     
     # Load data
@@ -148,7 +148,7 @@ if __name__ == "__main__":
     fig, df = quick_flight_path_view()
     
     # Save to HTML file instead of showing directly
-    html_filename = "flight_path_visualization_tiller5.html"
+    html_filename = "flight_path_visualization_tarva.html"
     fig.write_html(html_filename)
     print(f"\nVisualization saved to: {html_filename}")
     print("Open this file in your web browser to view the interactive map.")

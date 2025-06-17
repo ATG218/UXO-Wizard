@@ -71,8 +71,8 @@ def main():
     """Main function to combine the three test CSV files."""
     
     # Define the input files
-    input_files = ['test.csv', 'test1.csv', 'test2.csv']
-    output_file = 'combined_drone_data.csv'
+    input_files = ['tarva/concentrations_tarva_1.csv', 'tarva/concentrations_tarva_2.csv', 'tarva/concentrations_tarva_3.csv']
+    output_file = 'concentrations_tarva_clean.csv'
     
     print("CSV File Combiner")
     print("=" * 20)

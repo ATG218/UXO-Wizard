@@ -5,7 +5,13 @@ from plotly.subplots import make_subplots
 import numpy as np
 from datetime import datetime
 
-def create_concentration_map(csv_file, map_style="outdoors"):
+# Mapbox API token - replace with your own token
+MAPBOX_TOKEN = "pk.eyJ1Ijoia3Jpc3AxNDAiLCJhIjoiY21jMGE0Zm5jMDA0bzJrczBwbnZ5czdkNCJ9.hZMQoAmmdeNWwB2fuu80Tg"
+
+# Set the token globally for plotly
+px.set_mapbox_access_token(MAPBOX_TOKEN)
+
+def create_concentration_map(csv_file, map_style="satellite"):
     """
     Create an interactive map visualization of concentration data
     with toggleable measurements.
@@ -13,13 +19,15 @@ def create_concentration_map(csv_file, map_style="outdoors"):
     Args:
         csv_file: Path to the CSV file
         map_style: Map style to use. Options:
-                  - "open-street-map" (best coverage, no zoom limits)
-                  - "satellite" (satellite imagery, limited at high zoom)
+                  - "satellite" (satellite imagery)
                   - "satellite-streets" (hybrid satellite + streets)
                   - "outdoors" (topographic style)
                   - "light" (light colored streets)
                   - "dark" (dark theme)
+                  - "open-street-map" (basic, no API key needed)
     """
+    
+    print(f"✅ Using '{map_style}' map style with Mapbox API")
     
     # Read the CSV file
     df = pd.read_csv(csv_file)
@@ -86,7 +94,7 @@ def create_concentration_map(csv_file, map_style="outdoors"):
                 text=hover_text,
                 hovertemplate='%{text}',
                 name=measurement,
-                visible=True if i == 0 else False  # Only show the first measurement initially
+                visible=True if i == 0 else False,  # Only show the first measurement initially
             )
         )
     
@@ -96,33 +104,46 @@ def create_concentration_map(csv_file, map_style="outdoors"):
     lat_range = df['lat'].max() - df['lat'].min()
     lon_range = df['lon'].max() - df['lon'].min()
     
-    # Estimate zoom level based on data spread
+    # Estimate zoom level based on data spread (more aggressive for better detail)
     max_range = max(lat_range, lon_range)
     if max_range > 1:
-        zoom = 8
+        zoom = 9
     elif max_range > 0.1:
-        zoom = 10
+        zoom = 11
     elif max_range > 0.01:
-        zoom = 12
+        zoom = 13
+    elif max_range > 0.001:
+        zoom = 15
     else:
-        zoom = 14
+        zoom = 17
     
     # Update layout with better map configuration
     fig.update_layout(
         title={
-            'text': 'Concentration Data Visualization Map',
+            'text': f'Concentration Data Visualization Map ({map_style})',
             'x': 0.5,
             'xanchor': 'center',
             'font': {'size': 20}
         },
         map=dict(
-            style=map_style,
+            style="white-bg",      # neutral base
             center=dict(lat=lat_center, lon=lon_center),
             zoom=zoom,
+            layers=[{
+                "sourcetype": "raster",
+                "source": [
+                    # Mapbox Satellite (needs token in the URL):
+                    f"https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/{{z}}/{{x}}/{{y}}?access_token={MAPBOX_TOKEN}"
+                ],
+                "below": "traces",
+                "minzoom": 0,
+                "maxzoom": 22
+            }]
         ),
         height=700,
-        margin=dict(l=0, r=0, t=50, b=0)
+        margin=dict(l=0, r=0, t=60, b=0)
     )
+
     
     # Create dropdown menu for selecting measurements
     dropdown_buttons = []
@@ -137,7 +158,7 @@ def create_concentration_map(csv_file, map_style="outdoors"):
                 method="update",
                 args=[
                     {"visible": visibility},
-                    {"title": f"Concentration Data Visualization Map - {measurement}"}
+                    {"title": f"Concentration Data Visualization Map - {measurement} ({map_style})"}
                 ]
             )
         )
@@ -173,6 +194,7 @@ def create_concentration_map(csv_file, map_style="outdoors"):
     
     return fig
 
+
 def display_data_summary(csv_file):
     """
     Display a summary of the data
@@ -195,7 +217,7 @@ def display_data_summary(csv_file):
 
 if __name__ == "__main__":
     # File path to your CSV
-    csv_file = "test4.csv"
+    csv_file = "tarva/concentrations_tarva_clean.csv"
     
     try:
         # Display data summary
@@ -205,21 +227,21 @@ if __name__ == "__main__":
         print("\nCreating interactive map...")
         
         # Choose your preferred map style:
-        # Options: "open-street-map", "satellite", "satellite-streets", "outdoors", "light", "dark"
-        map_style = "outdoors"  # This hybrid style works well at all zoom levels
+        map_style = "satellite"  # or "satellite-streets", "outdoors", "light", "dark", "open-street-map"
         
         fig = create_concentration_map(csv_file, map_style=map_style)
-        print(f"Using map style: {map_style}")
+        print(f"✅ Map created successfully")
         
-        # Show the map
-        fig.show()
-        
-        # Optionally save as HTML
-        fig.write_html("concentration_map_tiller6.html")
-        print("Map saved as 'concentration_map_tiller6.html'")
+        # Save as HTML with token config
+        output_file = "concentration_map_tarva_clean.html"
+        print(f"💾 Saving map to '{output_file}'...")
+        fig.write_html(output_file, 
+                      config={"mapboxAccessToken": MAPBOX_TOKEN},
+                      include_plotlyjs="cdn")
+        print(f"✅ Map saved successfully as '{output_file}'")
         
     except FileNotFoundError:
-        print(f"Error: Could not find the file '{csv_file}'")
+        print(f"❌ Error: Could not find the file '{csv_file}'")
         print("Please make sure the CSV file is in the same directory as this script.")
     except Exception as e:
-        print(f"An error occurred: {e}") 
+        print(f"❌ An error occurred: {e}") 
