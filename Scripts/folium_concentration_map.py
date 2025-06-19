@@ -219,7 +219,7 @@ def create_folium_concentration_map(csv_file, output_file=None):
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
     
     # Define the measurement columns we want to visualize
-    measurement_columns = ['Total', 'Countrate', 'U238', 'K40', 'Th232', 'Cs137', 'Height', 'Press', 'Temp', 'Hum']
+    measurement_columns = ['Countrate', 'U238', 'K40', 'Th232', 'Cs137', 'Height', 'Press', 'Temp', 'Hum']
     
     # Filter to only columns that exist in the data
     available_measurements = [col for col in measurement_columns if col in df.columns]
@@ -288,34 +288,6 @@ def create_folium_concentration_map(csv_file, output_file=None):
         control=True
     ).add_to(m)
 
-    # 2. Hill-shade relief (transparent overlay)
-    folium.WmsTileLayer(
-        url='https://wms.geonorge.no/skwms1/wms.fjellskygge',
-        name='Kartverket Hill-shade',
-        layers='fjellskygge',
-        fmt='image/png',
-        transparent=True,
-        opacity=0.6,
-        version='1.3.0',
-        attr='© Kartverket',
-        overlay=True,
-        control=True
-    ).add_to(m)
-
-    # 3. 10 m contour lines (transparent overlay)
-    folium.WmsTileLayer(
-        url='https://wms.geonorge.no/skwms1/wms.n20kart',
-        name='Contours 10 m',
-        layers='Hoydekurve',
-        fmt='image/png',
-        transparent=True,
-        opacity=0.7,
-        version='1.3.0',
-        attr='© Kartverket',
-        overlay=True,
-        control=True
-    ).add_to(m)
-    
     # Create feature groups for each measurement
     measurement_groups = {}
     
@@ -516,7 +488,7 @@ def create_folium_concentration_map(csv_file, output_file=None):
     # Generate output filename if not provided
     if output_file is None:
         base_name = os.path.splitext(os.path.basename(csv_file))[0]
-        output_file = f"folium_concentration_map_{base_name}.html"
+        output_file = f"concentration_map_{base_name}.html"
     
     return m, output_file
 
@@ -535,7 +507,7 @@ def display_data_summary(csv_file):
     print(f"Longitude range: {df['lon'].min():.6f} to {df['lon'].max():.6f}")
     
     print("\n=== Measurement Statistics ===")
-    measurement_columns = ['Total', 'Countrate', 'U238', 'K40', 'Th232', 'Cs137', 'Height', 'Press', 'Temp', 'Hum']
+    measurement_columns = ['Countrate', 'U238', 'K40', 'Th232', 'Cs137', 'Height', 'Press', 'Temp', 'Hum']
     
     for col in measurement_columns:
         if col in df.columns:
@@ -544,7 +516,7 @@ def display_data_summary(csv_file):
 
 if __name__ == "__main__":
     # File path to your CSV
-    csv_file = "tiller/high_alt/concentrations_tiller_high.csv"
+    csv_file = "concentrations(in)(3).csv"
     
     try:
         # Display data summary
