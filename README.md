@@ -38,24 +38,25 @@ UXO Wizard is a Python-based suite of tools designed for processing, analyzing, 
 
 ```
 UXO-Wizard/
-├── Scripts/              # Core magnetic data processing scripts
-├── sgtool-python/        # Advanced geophysical processing toolkit
-├── sgtool/              # Original QGIS plugin (reference)
+├── mag/                  # Development branch tools (magnetic processing)
+│   ├── scripts/         # Core magnetic data processing scripts
+│   └── sgtool-python/   # Advanced geophysical processing toolkit
 └── README.md            # This file
 ```
 
-### Scripts Directory
-Python scripts for magnetic survey data processing and analysis:
-- **Magnetic Processing**: `magbase.py`, `magvis.py` - Core data processing and visualization
-- **Advanced Analysis**: `vistestv2.py`, `smearing.py` - Enhanced filtering and artifact removal
-- **Utilities**: `analyze_flight_time.py`, `grid_interpolator.py` - Data analysis tools
+The main branch contains only this overview and documentation. All development work and magnetic processing tools are organized in the `mag/` directory, which corresponds to the `mag` branch for active development.
 
-### SGTool-Python
-Standalone geophysical processing toolkit adapted from SGTool:
-- Command-line interface for batch processing
-- Vectorized algorithms for performance
-- Interactive visualization capabilities
-- Automated magnetic field parameter detection
+### Development Structure (mag/ directory)
+- **scripts/**: Python scripts for magnetic survey data processing and analysis
+  - **Magnetic Processing**: `magbase.py`, `magvis.py` - Core data processing and visualization
+  - **Advanced Analysis**: `vistestv2.py`, `smearing.py` - Enhanced filtering and artifact removal
+  - **Utilities**: `analyze_flight_time.py`, `grid_interpolator.py` - Data analysis tools
+
+- **sgtool-python/**: Standalone geophysical processing toolkit adapted from SGTool
+  - Command-line interface for batch processing
+  - Vectorized algorithms for performance
+  - Interactive visualization capabilities
+  - Automated magnetic field parameter detection
 
 ## Quick Start
 
@@ -70,11 +71,14 @@ Standalone geophysical processing toolkit adapted from SGTool:
    ```bash
    git clone https://github.com/ATG218/UXO-Wizard.git
    cd UXO-Wizard
+   
+   # Switch to mag branch for development tools
+   git checkout mag
    ```
 
 2. **Set up Scripts environment**
    ```bash
-   cd Scripts
+   cd mag/scripts
    conda env create -f environment.yml
    conda activate uxo-wizard-scripts
    ```
