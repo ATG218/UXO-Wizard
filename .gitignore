@@ -1,0 +1,149 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.pyc
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.conda/
+
+# UV package manager
+uv.lock
+.uvlock
+
+# Conda
+environment.yml.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Data files and outputs
+*.csv
+*.tif
+*.tiff
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+*.html
+*.mp4
+*.avi
+*.mov
+
+# Geospatial data
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.qpj
+
+# Log files
+logs/
+*.log
+*.txt
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Large data directories
+data/
+Magnetic_Data/
+Multispectral_Data/
+Tarva/
+KristianRedTank/
+KristianSwamp/
+KristianSwampp/
+swamp/
+visualizations/
+OldFlights/
+
+# Specific to UXO-Wizard
+*_processed_*.csv
+*_segmented/
+*_interpolated_grid*
+*_over_time*
+*_interactive*
+*_filtered*
+interactive_plots/
+filtered/
+processing_results/
+Plots/
+
+# Office documents
+*.docx
+*.doc
+*.xlsx
+*.xls
+*.pptx
+*.ppt
+
+# Compiled files
+*.o
+*.a
+*.lib
+*.dll
+*.exe
+
+# Configuration files with sensitive data
+config.json
+*.env
+secrets.json
+
+# Test coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Documentation builds
+docs/_build/
