@@ -12,6 +12,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from pykrige.ok import OrdinaryKriging
+from typing import Optional, Tuple, Union
 
 def create_interpolated_overlay(valid_data, measurement, map_bounds=None):
     """
@@ -33,12 +34,12 @@ def create_interpolated_overlay(valid_data, measurement, map_bounds=None):
         values = valid_data[measurement].values
         
         # Calculate statistics for value-based scaling
-        mean_val = np.mean(values)
-        std_val = np.std(values)
+        mean_val = float(np.mean(values))
+        std_val = float(np.std(values))
         
         # Create interpolation grid
-        lat_min, lat_max = lats.min(), lats.max()
-        lon_min, lon_max = lons.min(), lons.max()
+        lat_min, lat_max = float(lats.min()), float(lats.max())
+        lon_min, lon_max = float(lons.min()), float(lons.max())
         
         # Add some padding to the grid
         lat_padding = (lat_max - lat_min) * 0.1
@@ -161,10 +162,10 @@ def create_interpolated_overlay(valid_data, measurement, map_bounds=None):
         n_bins = 256
         cmap = mcolors.LinearSegmentedColormap.from_list('custom', colors, N=n_bins)
         
-        # Plot the interpolated field
+        # Plot the interpolated field - convert list to tuple for extent
         plt.imshow(
             interpolated_grid_clipped, 
-            extent=[lon_min, lon_max, lat_min, lat_max],
+            extent=(lon_min, lon_max, lat_min, lat_max),  # Convert to tuple
             origin='lower',
             cmap=cmap,
             alpha=0.7,
@@ -186,7 +187,8 @@ def create_interpolated_overlay(valid_data, measurement, map_bounds=None):
         # Create folium raster overlay
         bounds = [[lat_min, lon_min], [lat_max, lon_max]]
         
-        overlay = folium.raster_layers.ImageOverlay(
+        # Use type ignore for dynamic folium API
+        overlay = folium.raster_layers.ImageOverlay(  # type: ignore
             image=f"data:image/png;base64,{img_b64}",
             bounds=bounds,
             opacity=0.7,
@@ -200,7 +202,7 @@ def create_interpolated_overlay(valid_data, measurement, map_bounds=None):
         return None
 
 
-def create_folium_concentration_map(csv_file, output_file=None):
+def create_folium_concentration_map(csv_file: str, output_file: Optional[str] = None) -> Tuple[folium.Map, str]:
     """
     Create an interactive folium map with gradient field visualizations
     of concentration data with toggleable measurements.
@@ -208,6 +210,9 @@ def create_folium_concentration_map(csv_file, output_file=None):
     Args:
         csv_file: Path to the CSV file
         output_file: Output HTML file name (optional)
+    
+    Returns:
+        Tuple of (folium.Map, output_filename)
     """
     
     print(f"📊 Creating folium concentration map from: {csv_file}")
@@ -312,12 +317,13 @@ def create_folium_concentration_map(csv_file, output_file=None):
         if interpolated_overlay is not None:
             interpolated_overlay.add_to(feature_group)
         
-        # Get statistics for reference
+        # Get statistics for reference - fix numpy function calls
         values = valid_data[measurement].values
-        min_val = np.min(values)
-        max_val = np.max(values)
-        mean_val = np.mean(values)
-        std_val = np.std(values)
+        values_array = np.asarray(values, dtype=float)  # Ensure proper numpy array type
+        min_val = float(np.min(values_array))
+        max_val = float(np.max(values_array))
+        mean_val = float(np.mean(values_array))
+        std_val = float(np.std(values_array))
         
         # Add feature group to map
         feature_group.add_to(m)
@@ -425,7 +431,8 @@ def create_folium_concentration_map(csv_file, output_file=None):
     </div>
     '''
     
-    m.get_root().html.add_child(folium.Element(color_legend_html))
+    # Use type ignore for dynamic folium API
+    m.get_root().html.add_child(folium.Element(color_legend_html))  # type: ignore
     
     # Add "Uncheck All" button with JavaScript functionality
     uncheck_all_html = '''
@@ -483,7 +490,8 @@ def create_folium_concentration_map(csv_file, output_file=None):
     </script>
     '''
     
-    m.get_root().html.add_child(folium.Element(uncheck_all_html))
+    # Use type ignore for dynamic folium API
+    m.get_root().html.add_child(folium.Element(uncheck_all_html))  # type: ignore
     
     # Generate output filename if not provided
     if output_file is None:
@@ -493,7 +501,7 @@ def create_folium_concentration_map(csv_file, output_file=None):
     return m, output_file
 
 
-def display_data_summary(csv_file):
+def display_data_summary(csv_file: str) -> None:
     """
     Display a summary of the data
     """
@@ -516,7 +524,7 @@ def display_data_summary(csv_file):
 
 if __name__ == "__main__":
     # File path to your CSV
-    csv_file = "concentrations(in)(3).csv"
+    csv_file = "tarva/gamma/concentrations_tarva_clean.csv"
     
     try:
         # Display data summary
