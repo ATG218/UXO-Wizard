@@ -146,4 +146,4 @@ coverage.xml
 dmypy.json
 
 # Documentation builds
-docs/_build/
+docs/_build/mag/
