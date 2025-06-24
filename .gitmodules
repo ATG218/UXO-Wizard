@@ -1,0 +1,3 @@
+[submodule "imageprocessing"]
+	path = imageprocessing
+	url = git@github.com:ATG218/imageprocessing.git
