@@ -49,6 +49,12 @@ class ProjectExplorer(QWidget):
         self.expand_btn.clicked.connect(self.expand_all)
         toolbar_layout.addWidget(self.expand_btn)
         
+        self.home_btn = QToolButton()
+        self.home_btn.setText("🏠")
+        self.home_btn.setToolTip("Go to Home Directory")
+        self.home_btn.clicked.connect(self.go_home)
+        toolbar_layout.addWidget(self.home_btn)
+        
         toolbar_layout.addStretch()
         
         # Tree view
@@ -193,3 +199,7 @@ class ProjectExplorer(QWidget):
             self.model.setFilter(self.model.filter() | QDir.Hidden)
         else:
             self.model.setFilter(self.model.filter() & ~QDir.Hidden) 
+    
+    def go_home(self):
+        """Navigate to the home directory"""
+        self.set_root_path(QDir.homePath()) 

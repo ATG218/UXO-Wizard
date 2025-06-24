@@ -16,20 +16,31 @@ from .console_widget import ConsoleWidget
 from .data_viewer import DataViewer
 from .themes import ThemeManager
 
-# Try to import map widget, fallback if WebEngine not available
+# Try to import map widget, fallback if dependencies not available
 try:
     from .map_widget import MapWidget
-    HAS_WEB_ENGINE = True
-except ImportError:
-    logger.warning("PySide6-WebEngine not available. Map functionality will be limited.")
-    HAS_WEB_ENGINE = False
+    HAS_MAP_DEPENDENCIES = True
+except ImportError as e:
+    logger.warning(f"Map dependencies not available: {str(e)}")
+    logger.warning("Install with: pip install PySide6-WebEngine folium")
+    HAS_MAP_DEPENDENCIES = False
     
     # Create a fallback map widget
     class MapWidget(QWidget):
         def __init__(self):
             super().__init__()
             layout = QVBoxLayout()
-            layout.addWidget(QLabel("Map functionality requires PySide6-WebEngine\nInstall with: pip install PySide6-WebEngine"))
+            layout.addWidget(QLabel("""
+Map functionality requires additional dependencies:
+
+• PySide6-WebEngine
+• folium
+
+Install with:
+pip install PySide6-WebEngine folium
+
+After installation, restart the application.
+            """))
             self.setLayout(layout)
             
         def cleanup(self):
@@ -96,6 +107,11 @@ class MainWindow(QMainWindow):
         self.import_data_action.triggered.connect(self.import_data)
         file_menu.addAction(self.import_data_action)
         
+        self.browse_files_action = QAction("&Browse Files", self)
+        self.browse_files_action.setShortcut("Ctrl+B")
+        self.browse_files_action.triggered.connect(self.browse_files)
+        file_menu.addAction(self.browse_files_action)
+        
         file_menu.addSeparator()
         
         self.exit_action = QAction("E&xit", self)
@@ -135,6 +151,11 @@ class MainWindow(QMainWindow):
         self.light_theme_action.setCheckable(True)
         self.light_theme_action.triggered.connect(lambda: self.change_theme("light"))
         self.theme_menu.addAction(self.light_theme_action)
+        
+        self.cyberpunk_theme_action = QAction("🌆 Cyberpunk", self)
+        self.cyberpunk_theme_action.setCheckable(True)
+        self.cyberpunk_theme_action.triggered.connect(lambda: self.change_theme("cyberpunk"))
+        self.theme_menu.addAction(self.cyberpunk_theme_action)
         
         view_menu.addSeparator()
         
@@ -180,10 +201,12 @@ class MainWindow(QMainWindow):
         main_toolbar = self.addToolBar("Main")
         main_toolbar.setObjectName("MainToolBar")
         
+        # Put browse files and import data first (leftmost)
+        main_toolbar.addAction(self.browse_files_action)
+        main_toolbar.addAction(self.import_data_action)
+        main_toolbar.addSeparator()
         main_toolbar.addAction(self.new_project_action)
         main_toolbar.addAction(self.open_project_action)
-        main_toolbar.addSeparator()
-        main_toolbar.addAction(self.import_data_action)
         
         # Processing toolbar
         process_toolbar = self.addToolBar("Processing")
@@ -199,18 +222,11 @@ class MainWindow(QMainWindow):
     def setup_docks(self):
         """Create dockable panels"""
         # Project Explorer Dock
-        self.project_dock = QDockWidget("Project Explorer", self)
+        self.project_dock = QDockWidget("File Explorer", self)
         self.project_dock.setObjectName("ProjectExplorerDock")
         self.project_explorer = ProjectExplorer()
         self.project_dock.setWidget(self.project_explorer)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.project_dock)
-        
-        # Console/Log Dock
-        self.console_dock = QDockWidget("Console", self)
-        self.console_dock.setObjectName("ConsoleDock")
-        self.console_widget = ConsoleWidget()
-        self.console_dock.setWidget(self.console_widget)
-        self.addDockWidget(Qt.BottomDockWidgetArea, self.console_dock)
         
         # Data Viewer Dock
         self.data_dock = QDockWidget("Data Viewer", self)
@@ -219,6 +235,14 @@ class MainWindow(QMainWindow):
         self.data_dock.setWidget(self.data_viewer)
         self.addDockWidget(Qt.RightDockWidgetArea, self.data_dock)
         
+        
+        # Console/Log Dock
+        self.console_dock = QDockWidget("Console", self)
+        self.console_dock.setObjectName("ConsoleDock")
+        self.console_widget = ConsoleWidget()
+        self.console_dock.setWidget(self.console_widget)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.console_dock)
+
         # Map Preview Dock
         self.map_dock = QDockWidget("Map Preview", self)
         self.map_dock.setObjectName("MapPreviewDock")
@@ -226,9 +250,9 @@ class MainWindow(QMainWindow):
         self.map_dock.setWidget(self.map_widget)
         self.addDockWidget(Qt.RightDockWidgetArea, self.map_dock)
         
-        # Tabify some docks
-        self.tabifyDockWidget(self.data_dock, self.map_dock)
-        self.data_dock.raise_()
+        # Tabify docks - Console and Map together, Data separate  
+        self.tabifyDockWidget(self.console_dock, self.map_dock)
+        self.map_dock.raise_()  # Map tab on top by default
         
         # Add dock toggles to View menu
         self.dock_menu.addAction(self.project_dock.toggleViewAction())
@@ -273,6 +297,32 @@ class MainWindow(QMainWindow):
         # Tab connections
         self.central_tabs.tabCloseRequested.connect(self.close_tab)
         
+        # Data viewer connections
+        self.data_viewer.data_selected.connect(self.update_map_with_data)
+        
+    def update_map_with_data(self, data):
+        """Update map with data from the data viewer"""
+        if hasattr(self.map_widget, 'add_data_layer') and data is not None:
+            try:
+                # Check if data has coordinate columns
+                if hasattr(data, 'columns'):
+                    coord_cols = []
+                    for col in data.columns:
+                        col_lower = col.lower()
+                        if any(x in col_lower for x in ['lat', 'lon', 'x', 'y', 'coord']):
+                            coord_cols.append(col)
+                    
+                    if len(coord_cols) >= 2:
+                        # Add data as points layer
+                        self.map_widget.add_data_layer("Survey Data", data, "points")
+                        self.map_dock.raise_()  # Bring map to front
+                        logger.info("Data plotted on map")
+                    else:
+                        logger.info("No coordinate columns found in data")
+                        
+            except Exception as e:
+                logger.error(f"Error updating map with data: {str(e)}")
+        
     def new_project(self):
         """Create a new project"""
         logger.info("Creating new project")
@@ -287,9 +337,41 @@ class MainWindow(QMainWindow):
         
     def import_data(self):
         """Import data into the current project"""
+        from PySide6.QtWidgets import QFileDialog
+        
         logger.info("Importing data")
-        # TODO: Implement data import dialog
-        self.status_label.setText("Importing data...")
+        
+        # Open file dialog for data files
+        file_dialog = QFileDialog(self)
+        file_dialog.setWindowTitle("Import Data File")
+        file_dialog.setFileMode(QFileDialog.ExistingFile)
+        file_dialog.setNameFilters([
+            "CSV files (*.csv)",
+            "Excel files (*.xlsx *.xls)",
+            "JSON files (*.json)",
+            "Text files (*.txt *.dat)",
+            "All files (*.*)"
+        ])
+        
+        if file_dialog.exec():
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                filepath = selected_files[0]
+                self.open_file(filepath)
+                self.status_label.setText(f"Imported: {filepath.split('/')[-1]}")
+    
+    def browse_files(self):
+        """Show the file explorer panel"""
+        logger.info("Showing file explorer")
+        
+        # Show and raise the project explorer dock
+        self.project_dock.show()
+        self.project_dock.raise_()
+        
+        # Also activate it (bring to front if tabified with other docks)
+        self.project_dock.activateWindow()
+        
+        self.status_label.setText("File explorer opened")
         
     def show_preferences(self):
         """Show preferences dialog"""
@@ -315,23 +397,83 @@ class MainWindow(QMainWindow):
         # Update theme actions
         self.dark_theme_action.setChecked(theme_name == "dark")
         self.light_theme_action.setChecked(theme_name == "light")
+        self.cyberpunk_theme_action.setChecked(theme_name == "cyberpunk")
         
         logger.info(f"Changed theme to: {theme_name}")
         
     def open_file(self, filepath):
         """Open a file in a new tab"""
         logger.info(f"Opening file: {filepath}")
-        # TODO: Implement file opening based on type
         
-        # For now, create a placeholder widget
+        try:
+            # Check if file is already open
+            filename = filepath.split('/')[-1]
+            for i in range(self.central_tabs.count()):
+                if self.central_tabs.tabText(i) == filename:
+                    self.central_tabs.setCurrentIndex(i)
+                    return
+            
+            # Create appropriate viewer based on file type
+            if filepath.lower().endswith(('.csv', '.xlsx', '.xls', '.json')):
+                # Create a new DataViewer instance for this file
+                data_viewer = DataViewer()
+                data_viewer.load_data(filepath)
+                widget = data_viewer
+                
+                # Also update the main data viewer dock
+                self.data_viewer.load_data(filepath)
+                self.data_dock.raise_()  # Bring data viewer to front
+                
+            elif filepath.lower().endswith(('.txt', '.dat', '.log')):
+                # Text file viewer
+                widget = self.create_text_viewer(filepath)
+                
+            else:
+                # Default placeholder for unsupported files
+                widget = QWidget()
+                layout = QVBoxLayout()
+                layout.addWidget(QLabel(f"File: {filepath}\nFile type not supported for viewing"))
+                widget.setLayout(layout)
+            
+            # Add to tabs
+            self.central_tabs.addTab(widget, filename)
+            self.central_tabs.setCurrentIndex(self.central_tabs.count() - 1)
+            
+            # Update status
+            self.status_label.setText(f"Opened: {filename}")
+            
+        except Exception as e:
+            logger.error(f"Error opening file {filepath}: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to open file:\n{str(e)}")
+    
+    def create_text_viewer(self, filepath):
+        """Create a simple text viewer widget"""
+        from PySide6.QtWidgets import QTextEdit, QVBoxLayout
+        
         widget = QWidget()
         layout = QVBoxLayout()
-        layout.addWidget(QLabel(f"File: {filepath}"))
+        
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+                text_edit.setPlainText(content)
+        except UnicodeDecodeError:
+            try:
+                with open(filepath, 'r', encoding='latin-1') as f:
+                    content = f.read()
+                    text_edit.setPlainText(content)
+            except Exception as e:
+                text_edit.setPlainText(f"Error reading file: {str(e)}")
+        except Exception as e:
+            text_edit.setPlainText(f"Error reading file: {str(e)}")
+        
+        layout.addWidget(text_edit)
         widget.setLayout(layout)
         
-        # Add to tabs
-        filename = filepath.split('/')[-1]
-        self.central_tabs.addTab(widget, filename)
+        return widget
         
     def close_tab(self, index):
         """Close a tab"""
