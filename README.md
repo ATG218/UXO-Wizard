@@ -41,7 +41,12 @@ UXO-Wizard/
 ├── mag/                  # Development branch tools (magnetic processing)
 │   ├── scripts/         # Core magnetic data processing scripts
 │   └── sgtool-python/   # Advanced geophysical processing toolkit
+|-- gamma/                  # Development branch tools (gamma ray spectrometer processing)
+│   ├── scripts/         # Core gamma data processing scripts
+|--- multi-spec/         # Development branch tools (multi-spec processing)
+│   ├── scripts/         # Core multi-spec data processing scripts
 └── README.md            # This file
+
 ```
 
 The main branch contains only this overview and documentation. All development work and magnetic processing tools are organized in the `mag/` directory, which corresponds to the `mag` branch for active development.
