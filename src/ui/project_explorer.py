@@ -4,11 +4,88 @@ Project Explorer Widget for UXO Wizard
 
 from PySide6.QtWidgets import (
     QTreeView, QVBoxLayout, QWidget, QToolButton, 
-    QHBoxLayout, QMenu, QFileSystemModel, QHeaderView
+    QHBoxLayout, QMenu, QFileSystemModel, QHeaderView,
+    QStackedWidget, QLabel, QPushButton
 )
 from PySide6.QtCore import Qt, Signal, QDir, QModelIndex
-from PySide6.QtGui import QIcon, QAction
+from PySide6.QtGui import QIcon, QAction, QFont
 from loguru import logger
+
+
+class ProjectWelcomeWidget(QWidget):
+    """Welcome widget shown when no project is open"""
+    
+    # Signals
+    open_project_requested = Signal()
+    
+    def __init__(self):
+        super().__init__()
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Initialize the welcome UI"""
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Add stretch to center content
+        layout.addStretch()
+        
+        # Icon/Logo (you can replace with actual icon later)
+        icon_label = QLabel("📁")
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet("font-size: 48px; margin-bottom: 10px;")
+        layout.addWidget(icon_label)
+        
+        # Welcome text
+        welcome_label = QLabel("Welcome to UXO Wizard")
+        welcome_label.setAlignment(Qt.AlignCenter)
+        welcome_font = QFont()
+        welcome_font.setPointSize(16)
+        welcome_font.setBold(True)
+        welcome_label.setFont(welcome_font)
+        welcome_label.setStyleSheet("color: #888888; margin-bottom: 10px;")
+        layout.addWidget(welcome_label)
+        
+        # Subtitle
+        subtitle_label = QLabel("Open a project folder to get started")
+        subtitle_label.setAlignment(Qt.AlignCenter)
+        subtitle_label.setStyleSheet("color: #666666; margin-bottom: 20px;")
+        layout.addWidget(subtitle_label)
+        
+        # Open Project button
+        self.open_project_btn = QPushButton("Open Project")
+        self.open_project_btn.setMinimumHeight(40)
+        self.open_project_btn.setMinimumWidth(150)
+        self.open_project_btn.clicked.connect(self.open_project_requested.emit)
+        self.open_project_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0d7377;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 10px 20px;
+            }
+            QPushButton:hover {
+                background-color: #14a085;
+            }
+            QPushButton:pressed {
+                background-color: #0a5d61;
+            }
+        """)
+        
+        # Center the button
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        button_layout.addWidget(self.open_project_btn)
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
+        
+        # Add stretch to center content
+        layout.addStretch()
+        
+        self.setLayout(layout)
 
 
 class ProjectExplorer(QWidget):
@@ -17,6 +94,7 @@ class ProjectExplorer(QWidget):
     # Signals
     file_selected = Signal(str)
     project_changed = Signal(str)
+    open_project_requested = Signal()
     
     def __init__(self):
         super().__init__()
@@ -27,6 +105,19 @@ class ProjectExplorer(QWidget):
         """Initialize the UI"""
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create stacked widget to switch between welcome and tree view
+        self.stacked_widget = QStackedWidget()
+        
+        # Create welcome widget
+        self.welcome_widget = ProjectWelcomeWidget()
+        self.welcome_widget.open_project_requested.connect(self.open_project_requested.emit)
+        self.stacked_widget.addWidget(self.welcome_widget)
+        
+        # Create tree view container
+        tree_container = QWidget()
+        tree_layout = QVBoxLayout()
+        tree_layout.setContentsMargins(0, 0, 0, 0)
         
         # Toolbar
         toolbar_layout = QHBoxLayout()
@@ -54,6 +145,13 @@ class ProjectExplorer(QWidget):
         self.home_btn.setToolTip("Go to Home Directory")
         self.home_btn.clicked.connect(self.go_home)
         toolbar_layout.addWidget(self.home_btn)
+        
+        # Add "Close Project" button to toolbar
+        self.close_project_btn = QToolButton()
+        self.close_project_btn.setText("✕")
+        self.close_project_btn.setToolTip("Close Project")
+        self.close_project_btn.clicked.connect(self.close_project)
+        toolbar_layout.addWidget(self.close_project_btn)
         
         toolbar_layout.addStretch()
         
@@ -91,21 +189,49 @@ class ProjectExplorer(QWidget):
         self.tree_view.doubleClicked.connect(self.handle_double_click)
         self.tree_view.clicked.connect(self.handle_click)
         
-        # Layout
-        layout.addLayout(toolbar_layout)
-        layout.addWidget(self.tree_view)
+        # Add to tree container
+        tree_layout.addLayout(toolbar_layout)
+        tree_layout.addWidget(self.tree_view)
+        tree_container.setLayout(tree_layout)
+        
+        # Add tree container to stacked widget
+        self.stacked_widget.addWidget(tree_container)
+        
+        # Add stacked widget to main layout
+        layout.addWidget(self.stacked_widget)
         self.setLayout(layout)
         
-        # Set initial directory (home for now)
-        self.set_root_path(QDir.homePath())
+        # Start with welcome widget
+        self.show_welcome()
+        
+    def show_welcome(self):
+        """Show the welcome widget"""
+        self.stacked_widget.setCurrentIndex(0)
+        self.current_project_path = None
+        self.project_changed.emit(None)  # Emit None to indicate no project
+        logger.info("Showing project explorer welcome screen")
+        
+    def show_tree_view(self):
+        """Show the tree view"""
+        self.stacked_widget.setCurrentIndex(1)
+        
+    def close_project(self):
+        """Close the current project and return to welcome screen"""
+        self.show_welcome()
+        logger.info("Project closed")
         
     def set_root_path(self, path):
         """Set the root path for the explorer"""
-        self.current_project_path = path
-        index = self.model.index(path)
-        self.tree_view.setRootIndex(index)
-        self.project_changed.emit(path)
-        logger.info(f"Project explorer root set to: {path}")
+        if path and QDir(path).exists():
+            self.current_project_path = path
+            index = self.model.index(path)
+            self.tree_view.setRootIndex(index)
+            self.show_tree_view()  # Switch to tree view when project is opened
+            self.project_changed.emit(path)
+            logger.info(f"Project explorer root set to: {path}")
+        else:
+            logger.warning(f"Invalid path: {path}")
+            self.show_welcome()
         
     def get_selected_path(self):
         """Get the currently selected file path"""
@@ -175,11 +301,12 @@ class ProjectExplorer(QWidget):
         
     def refresh_view(self):
         """Refresh the file view"""
-        # Force model to update
-        root = self.model.rootPath()
-        self.model.setRootPath("")
-        self.model.setRootPath(root)
-        logger.info("Project explorer refreshed")
+        if self.current_project_path:
+            # Force model to update
+            root = self.model.rootPath()
+            self.model.setRootPath("")
+            self.model.setRootPath(root)
+            logger.info("Project explorer refreshed")
         
     def collapse_all(self):
         """Collapse all tree items"""

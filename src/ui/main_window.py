@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QStatusBar, QVBoxLayout, QWidget, QTabWidget, QSplitter,
     QMessageBox, QLabel, QProgressBar
 )
-from PySide6.QtCore import Qt, QSettings, Signal, QTimer
+from PySide6.QtCore import Qt, QSettings, Signal, QTimer, QDir
 from PySide6.QtGui import QIcon, QKeySequence, QAction
 from loguru import logger
 
@@ -15,36 +15,7 @@ from .project_explorer import ProjectExplorer
 from .console_widget import ConsoleWidget
 from .data_viewer import DataViewer
 from .themes import ThemeManager
-
-# Try to import map widget, fallback if dependencies not available
-try:
-    from .map_widget import MapWidget
-    HAS_MAP_DEPENDENCIES = True
-except ImportError as e:
-    logger.warning(f"Map dependencies not available: {str(e)}")
-    logger.warning("Install with: pip install PySide6-WebEngine folium")
-    HAS_MAP_DEPENDENCIES = False
-    
-    # Create a fallback map widget
-    class MapWidget(QWidget):
-        def __init__(self):
-            super().__init__()
-            layout = QVBoxLayout()
-            layout.addWidget(QLabel("""
-Map functionality requires additional dependencies:
-
-• PySide6-WebEngine
-• folium
-
-Install with:
-pip install PySide6-WebEngine folium
-
-After installation, restart the application.
-            """))
-            self.setLayout(layout)
-            
-        def cleanup(self):
-            pass
+from .map_widget import MapWidget
 
 
 class MainWindow(QMainWindow):
@@ -99,18 +70,6 @@ class MainWindow(QMainWindow):
         self.open_project_action.setShortcut(QKeySequence.Open)
         self.open_project_action.triggered.connect(self.open_project)
         file_menu.addAction(self.open_project_action)
-        
-        file_menu.addSeparator()
-        
-        self.import_data_action = QAction("&Import Data", self)
-        self.import_data_action.setShortcut("Ctrl+I")
-        self.import_data_action.triggered.connect(self.import_data)
-        file_menu.addAction(self.import_data_action)
-        
-        self.browse_files_action = QAction("&Browse Files", self)
-        self.browse_files_action.setShortcut("Ctrl+B")
-        self.browse_files_action.triggered.connect(self.browse_files)
-        file_menu.addAction(self.browse_files_action)
         
         file_menu.addSeparator()
         
@@ -201,10 +160,7 @@ class MainWindow(QMainWindow):
         main_toolbar = self.addToolBar("Main")
         main_toolbar.setObjectName("MainToolBar")
         
-        # Put browse files and import data first (leftmost)
-        main_toolbar.addAction(self.browse_files_action)
-        main_toolbar.addAction(self.import_data_action)
-        main_toolbar.addSeparator()
+        # Essential project actions
         main_toolbar.addAction(self.new_project_action)
         main_toolbar.addAction(self.open_project_action)
         
@@ -260,6 +216,11 @@ class MainWindow(QMainWindow):
         self.dock_menu.addAction(self.data_dock.toggleViewAction())
         self.dock_menu.addAction(self.map_dock.toggleViewAction())
         
+        # Ensure File Explorer is visible and active by default
+        self.project_dock.show()
+        self.project_dock.raise_()
+        self.project_dock.activateWindow()
+        
     def setup_statusbar(self):
         """Create the status bar"""
         self.status_bar = QStatusBar()
@@ -293,12 +254,24 @@ class MainWindow(QMainWindow):
         # Project explorer connections
         self.project_explorer.file_selected.connect(self.open_file)
         self.project_explorer.project_changed.connect(self.project_changed.emit)
+        self.project_explorer.project_changed.connect(self.on_project_changed)
+        self.project_explorer.open_project_requested.connect(self.open_project)
         
         # Tab connections
         self.central_tabs.tabCloseRequested.connect(self.close_tab)
         
         # Data viewer connections
         self.data_viewer.data_selected.connect(self.update_map_with_data)
+        
+    def on_project_changed(self, project_path):
+        """Handle project path changes"""
+        if project_path:
+            # Project opened
+            folder_name = project_path.split('/')[-1]
+            self.setWindowTitle(f"UXO Wizard Desktop Suite - {folder_name}")
+        else:
+            # Project closed
+            self.setWindowTitle("UXO Wizard Desktop Suite")
         
     def update_map_with_data(self, data):
         """Update map with data from the data viewer"""
@@ -330,48 +303,42 @@ class MainWindow(QMainWindow):
         self.status_label.setText("New project created")
         
     def open_project(self):
-        """Open an existing project"""
-        logger.info("Opening project")
-        # TODO: Implement project opening dialog
-        self.status_label.setText("Project opened")
-        
-    def import_data(self):
-        """Import data into the current project"""
+        """Open an existing project folder"""
         from PySide6.QtWidgets import QFileDialog
         
-        logger.info("Importing data")
+        logger.info("Opening project folder")
         
-        # Open file dialog for data files
-        file_dialog = QFileDialog(self)
-        file_dialog.setWindowTitle("Import Data File")
-        file_dialog.setFileMode(QFileDialog.ExistingFile)
-        file_dialog.setNameFilters([
-            "CSV files (*.csv)",
-            "Excel files (*.xlsx *.xls)",
-            "JSON files (*.json)",
-            "Text files (*.txt *.dat)",
-            "All files (*.*)"
-        ])
+        # Open folder dialog to select project directory
+        folder_dialog = QFileDialog(self)
+        folder_dialog.setWindowTitle("Open Project Folder")
+        folder_dialog.setFileMode(QFileDialog.Directory)
+        folder_dialog.setOption(QFileDialog.ShowDirsOnly, True)
         
-        if file_dialog.exec():
-            selected_files = file_dialog.selectedFiles()
-            if selected_files:
-                filepath = selected_files[0]
-                self.open_file(filepath)
-                self.status_label.setText(f"Imported: {filepath.split('/')[-1]}")
-    
-    def browse_files(self):
-        """Show the file explorer panel"""
-        logger.info("Showing file explorer")
+        # Set initial directory to user's home or last used project path
+        last_project_path = self.settings.value("last_project_path", QDir.homePath())
+        folder_dialog.setDirectory(last_project_path)
         
-        # Show and raise the project explorer dock
-        self.project_dock.show()
-        self.project_dock.raise_()
-        
-        # Also activate it (bring to front if tabified with other docks)
-        self.project_dock.activateWindow()
-        
-        self.status_label.setText("File explorer opened")
+        if folder_dialog.exec():
+            selected_folders = folder_dialog.selectedFiles()
+            if selected_folders:
+                project_folder = selected_folders[0]
+                
+                # Set the project explorer to this folder
+                self.project_explorer.set_root_path(project_folder)
+                
+                # Show and bring the project explorer to front
+                self.project_dock.show()
+                self.project_dock.raise_()
+                self.project_dock.activateWindow()
+                
+                # Save this path for next time
+                self.settings.setValue("last_project_path", project_folder)
+                
+                # Update status
+                folder_name = project_folder.split('/')[-1]
+                self.status_label.setText(f"Project opened: {folder_name}")
+                
+                logger.info(f"Project folder opened: {project_folder}")
         
     def show_preferences(self):
         """Show preferences dialog"""

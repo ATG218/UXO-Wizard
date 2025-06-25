@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QToolButton, QLabel, QSlider
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWebEngineWidgets import QWebEngineView
 import folium
 from folium.plugins import Draw, MeasureControl, Fullscreen
@@ -57,6 +58,14 @@ class MapWidget(QWidget):
         self.refresh_btn.setToolTip("Refresh Map")
         self.refresh_btn.clicked.connect(self.refresh_map)
         toolbar.addWidget(self.refresh_btn)
+        
+        # Fullscreen button
+        self.fullscreen_btn = QToolButton()
+        self.fullscreen_btn.setText("🔳")
+        self.fullscreen_btn.setToolTip("Toggle Fullscreen")
+        self.fullscreen_btn.setCheckable(True)
+        self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
+        toolbar.addWidget(self.fullscreen_btn)
         
         toolbar.addSeparator()
         
@@ -105,6 +114,10 @@ class MapWidget(QWidget):
         layout.addWidget(self.web_view)
         self.setLayout(layout)
         
+        # Add escape key shortcut for exiting fullscreen
+        self.escape_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self.escape_shortcut.activated.connect(self.exit_fullscreen)
+        
     def create_default_map(self):
         """Create default map with Kartverket as primary layer"""
         logger.info("Creating Norwegian UXO operations map")
@@ -152,32 +165,35 @@ class MapWidget(QWidget):
                 version='1.3.0',
                 attr='© Kartverket - Norwegian Mapping Authority',
                 overlay=False,
-                control=True
+                control=True,
+                show=True  # Explicitly visible by default
             ).add_to(self.current_map)
-            logger.debug("Kartverket primary layer added")
+            logger.debug("Kartverket primary layer added as default visible layer")
         except Exception as e:
             logger.warning(f"Kartverket primary layer failed: {e}")
     
     def _add_backup_layers(self):
-        """Add international backup layers"""
+        """Add international backup layers (hidden by default)"""
         try:
-            # Backup 1: OpenStreetMap
-            #folium.TileLayer(
-            #    tiles='OpenStreetMap',
-           #     name='OpenStreetMap',
-           #     attr='© OpenStreetMap contributors',
-           #     control=True
-           # ).add_to(self.current_map)
+            # Backup 1: OpenStreetMap (hidden by default)
+            folium.TileLayer(
+                tiles='OpenStreetMap',
+                name='OpenStreetMap',
+                attr='© OpenStreetMap contributors',
+                control=True,
+                show=False  # Hidden by default
+            ).add_to(self.current_map)
             
-            # Backup 2: Satellite imagery
+            # Backup 2: Satellite imagery (hidden by default)
             folium.TileLayer(
                 tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
                 attr='© Esri, Maxar, Earthstar Geographics',
                 name='Satellite',
-                control=True
+                control=True,
+                show=False  # Hidden by default
             ).add_to(self.current_map)
             
-            logger.debug("Backup layers added")
+            logger.debug("Backup layers added (hidden by default)")
         except Exception as e:
             logger.warning(f"Backup layers failed: {e}")
     
@@ -501,3 +517,35 @@ class MapWidget(QWidget):
                 os.unlink(self.temp_html)
             except:
                 pass 
+
+    def toggle_fullscreen(self, checked):
+        """Toggle fullscreen mode for the map widget"""
+        if checked:
+            # Store the current parent for restoration
+            self._original_parent = self.parent()
+            
+            # Make this widget fullscreen
+            self.setParent(None)
+            self.showFullScreen()
+            self.fullscreen_btn.setText("🔲")
+            self.fullscreen_btn.setToolTip("Exit Fullscreen")
+            logger.info("Map entered fullscreen mode")
+        else:
+            # Restore to original parent
+            if hasattr(self, '_original_parent') and self._original_parent:
+                self.showNormal()
+                self.setParent(self._original_parent)
+                
+                # Re-add to the parent's layout if it's a dock widget
+                if hasattr(self._original_parent, 'setWidget'):
+                    self._original_parent.setWidget(self)
+                    
+            self.fullscreen_btn.setText("🔳")
+            self.fullscreen_btn.setToolTip("Toggle Fullscreen")
+            logger.info("Map restored from fullscreen")
+    
+    def exit_fullscreen(self):
+        """Exit fullscreen mode when escape is pressed"""
+        if self.isFullScreen():
+            self.fullscreen_btn.setChecked(False)
+            self.toggle_fullscreen(False) 

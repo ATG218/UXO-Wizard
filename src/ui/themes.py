@@ -633,8 +633,7 @@ class ThemeManager:
             background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
                                        stop: 0 #ff00ff, stop: 1 #8000ff);
             color: #ffffff;
-            border-bottom: 3px solid #00ffff;
-            box-shadow: 0 0 20px #ff00ff;
+            border: 3px solid #00ffff;
         }
         
         QTabBar::tab:hover {
@@ -642,7 +641,6 @@ class ThemeManager:
                                        stop: 0 #00ffff, stop: 1 #0080ff);
             color: #000000;
             border: 1px solid #00ffff;
-            box-shadow: 0 0 15px #00ffff;
         }
         
         /* Dock Widgets - Holographic Panels */
@@ -684,7 +682,6 @@ class ThemeManager:
                                        stop: 0 #ff00ff, stop: 1 #8000ff);
             color: #ffffff;
             border: 1px solid #00ffff;
-            box-shadow: 0 0 10px #ff00ff;
         }
         
         QMenu {
@@ -705,7 +702,6 @@ class ThemeManager:
                                        stop: 0 #ff00ff, stop: 1 #00ffff);
             color: #ffffff;
             border: 1px solid #ffffff;
-            box-shadow: 0 0 8px #ff00ff;
         }
         
         /* Tool Bar - Command Console */
@@ -734,8 +730,7 @@ class ThemeManager:
             background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
                                        stop: 0 #00ffff, stop: 1 #0080ff);
             color: #000000;
-            border: 2px solid #ffffff;
-            box-shadow: 0 0 15px #00ffff;
+            border: 3px solid #00ffff;
         }
         
         QToolButton:pressed {
@@ -743,7 +738,6 @@ class ThemeManager:
                                        stop: 0 #ff00ff, stop: 1 #8000ff);
             color: #ffffff;
             border: 2px solid #00ffff;
-            box-shadow: 0 0 20px #ff00ff;
         }
         
         QToolButton:checked {
@@ -751,7 +745,6 @@ class ThemeManager:
                                        stop: 0 #ff00ff, stop: 1 #00ffff);
             color: #ffffff;
             border: 2px solid #ffffff;
-            box-shadow: 0 0 25px #ff00ff;
         }
         
         /* Status Bar - Data Stream */
@@ -878,7 +871,6 @@ class ThemeManager:
         QLineEdit:focus {
             border: 2px solid #00ffff;
             background-color: #2a2a3e;
-            box-shadow: 0 0 15px #00ffff;
         }
         
         /* Combo Box - Selection Pod */
@@ -898,7 +890,6 @@ class ThemeManager:
             background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
                                        stop: 0 #00ffff, stop: 1 #0080ff);
             color: #000000;
-            box-shadow: 0 0 10px #00ffff;
         }
         
         QComboBox::drop-down {
@@ -933,7 +924,6 @@ class ThemeManager:
             background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
                                        stop: 0 #00ffff, stop: 0.5 #ff00ff, stop: 1 #8000ff);
             border-radius: 6px;
-            box-shadow: 0 0 10px #ff00ff;
         }
         
         /* Slider - Control Interface */
@@ -957,7 +947,6 @@ class ThemeManager:
         QSlider::handle:horizontal:hover {
             background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1,
                                        stop: 0 #00ffff, stop: 1 #ff00ff);
-            box-shadow: 0 0 15px #ff00ff;
         }
         
         /* Scroll Bar - Interface Chrome */
@@ -979,7 +968,6 @@ class ThemeManager:
         QScrollBar::handle:vertical:hover {
             background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
                                        stop: 0 #00ffff, stop: 1 #ff00ff);
-            box-shadow: 0 0 10px #ff00ff;
         }
         
         QScrollBar::add-line:vertical,
@@ -1013,7 +1001,6 @@ class ThemeManager:
                                        stop: 0 #00ffff, stop: 1 #0080ff);
             color: #000000;
             border: 2px solid #ffffff;
-            box-shadow: 0 0 20px #00ffff;
         }
         
         QPushButton:pressed {
@@ -1021,7 +1008,6 @@ class ThemeManager:
                                        stop: 0 #ff00ff, stop: 1 #8000ff);
             color: #ffffff;
             border: 2px solid #00ffff;
-            box-shadow: 0 0 25px #ff00ff;
         }
         
         /* Label - Data Display */

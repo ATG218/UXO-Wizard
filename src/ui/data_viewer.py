@@ -5,7 +5,7 @@ Data Viewer Widget for UXO Wizard - Display and analyze tabular data
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableView, QToolBar, 
     QComboBox, QToolButton, QLabel, QLineEdit,
-    QHeaderView, QMenu, QMessageBox
+    QHeaderView, QMenu, QMessageBox, QDialog, QDialogButtonBox
 )
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt, Signal, QAbstractTableModel, QModelIndex
@@ -122,6 +122,15 @@ class DataViewer(QWidget):
         self.export_btn.setText("Export")
         self.export_btn.clicked.connect(self.export_data)
         toolbar.addWidget(self.export_btn)
+        
+        toolbar.addSeparator()
+        
+        # Processing button
+        self.process_btn = QToolButton()
+        self.process_btn.setText("⚡ Process")
+        self.process_btn.setToolTip("Open Processing Menu")
+        self.process_btn.clicked.connect(self.show_processing_menu)
+        toolbar.addWidget(self.process_btn)
         
         # Table view
         self.table_view = QTableView()
@@ -273,4 +282,56 @@ class DataViewer(QWidget):
         rows = sorted(set(index.row() for index in selection))
         df = self.model.get_dataframe()
         
-        return df.iloc[rows] 
+        return df.iloc[rows]
+    
+    def show_processing_menu(self):
+        """Show the processing menu dialog"""
+        try:
+            logger.debug("Processing button clicked!")
+            df = self.model.get_dataframe()
+            logger.debug(f"DataFrame shape: {df.shape}")
+            
+            if df.empty:
+                logger.warning("No data available for processing")
+                QMessageBox.warning(self, "No Data", "Please load data before processing.")
+                return
+                
+            logger.debug("Importing ProcessingDialog...")
+            # Import here to avoid circular imports
+            from .processing_dialog import ProcessingDialog
+            
+            logger.debug("Creating processing dialog...")
+            dialog = ProcessingDialog(df, self)
+            logger.debug("Showing processing dialog...")
+            
+            result = dialog.exec()
+            logger.debug(f"Dialog result: {result}")
+            
+            if result == QDialog.Accepted:
+                # Get processed data
+                result = dialog.get_result()
+                if result and result.success and result.data is not None:
+                    logger.info("Processing completed successfully, updating data viewer")
+                    # Update the data viewer with processed data
+                    self.set_dataframe(result.data)
+                    self.data_selected.emit(result.data)
+                    
+                    # Show success message
+                    QMessageBox.information(
+                        self, 
+                        "Processing Complete",
+                        f"Processing completed successfully!\n"
+                        f"Anomalies found: {result.metadata.get('anomalies_found', 0)}\n"
+                        f"Processing time: {result.processing_time:.2f}s"
+                    )
+                else:
+                    logger.warning("Processing dialog accepted but no valid result returned")
+        except Exception as e:
+            logger.error(f"Error in show_processing_menu: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            QMessageBox.critical(self, "Error", f"Failed to open processing dialog:\n{str(e)}")
+    
+    def get_current_dataframe(self):
+        """Get the current dataframe"""
+        return self.model.get_dataframe() 
