@@ -301,7 +301,7 @@ class DataViewer(QWidget):
             from .processing_dialog import ProcessingDialog
             
             logger.debug("Creating processing dialog...")
-            dialog = ProcessingDialog(df, self)
+            dialog = ProcessingDialog(df, self, input_file_path=self.current_file)
             logger.debug("Showing processing dialog...")
             
             result = dialog.exec()
@@ -316,13 +316,17 @@ class DataViewer(QWidget):
                     self.set_dataframe(result.data)
                     self.data_selected.emit(result.data)
                     
-                    # Show success message
+                    # Show success message with file output info
+                    message = f"Processing completed successfully!\n"
+                    message += f"Anomalies found: {result.metadata.get('anomalies_found', 0)}\n"
+                    message += f"Processing time: {result.processing_time:.2f}s\n"
+                    if result.output_file_path:
+                        message += f"\nOutput file saved to:\n{result.output_file_path}"
+                    
                     QMessageBox.information(
                         self, 
                         "Processing Complete",
-                        f"Processing completed successfully!\n"
-                        f"Anomalies found: {result.metadata.get('anomalies_found', 0)}\n"
-                        f"Processing time: {result.processing_time:.2f}s"
+                        message
                     )
                 else:
                     logger.warning("Processing dialog accepted but no valid result returned")

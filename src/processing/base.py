@@ -5,9 +5,8 @@ Base classes for all data processors
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List, Callable
-from PySide6.QtCore import QObject, Signal, QThread
+from PySide6.QtCore import Signal, QThread
 import pandas as pd
-import numpy as np
 from loguru import logger
 import time
 
@@ -25,6 +24,10 @@ class ProcessingResult:
     metadata: Dict[str, Any] = None
     error_message: Optional[str] = None
     processing_time: float = 0.0
+    output_file_path: Optional[str] = None        # Generated file path
+    processing_script: Optional[str] = None       # Script/algorithm name
+    input_file_path: Optional[str] = None         # Original input file
+    export_format: str = "csv"                    # Output format
     
     def __post_init__(self):
         if self.metadata is None:

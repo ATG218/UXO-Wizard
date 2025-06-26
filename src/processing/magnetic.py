@@ -1,12 +1,10 @@
 """
-Magnetic data processing algorithms for UXO detection
+Magnetic data processing for UXO detection - Script Integration Framework
 """
 
 import pandas as pd
 import numpy as np
-from scipy import signal
-from scipy.ndimage import gaussian_filter1d
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 from loguru import logger
 
 from .base import BaseProcessor, ProcessingResult, ProcessingError
@@ -22,81 +20,44 @@ class MagneticProcessor(BaseProcessor):
         self.required_columns = []  # Will be detected automatically
         
     def _define_parameters(self) -> Dict[str, Any]:
-        """Define magnetic processing parameters"""
+        """Define basic magnetic processing parameters for script integration"""
         return {
-            'anomaly_detection': {
-                'threshold_std': {
-                    'value': 3.0,
-                    'type': 'float',
-                    'min': 1.0,
-                    'max': 10.0,
-                    'description': 'Anomaly threshold in standard deviations'
-                },
-                'window_size': {
-                    'value': 50,
-                    'type': 'int',
-                    'min': 10,
-                    'max': 500,
-                    'description': 'Moving window size for background estimation'
+            'script_selection': {
+                'script_name': {
+                    'value': 'basic_processing',
+                    'type': 'choice',
+                    'choices': ['basic_processing'],
+                    'description': 'Select magnetic processing script'
                 }
             },
-            'filters': {
-                'apply_kalman': {
-                    'value': True,
-                    'type': 'bool',
-                    'description': 'Apply Kalman filter for noise reduction'
-                },
-                'apply_wavelet': {
-                    'value': False,
-                    'type': 'bool',
-                    'description': 'Apply wavelet denoising'
-                },
-                'gaussian_sigma': {
-                    'value': 2.0,
-                    'type': 'float',
-                    'min': 0.5,
-                    'max': 10.0,
-                    'description': 'Gaussian filter sigma'
-                }
-            },
-            'advanced': {
-                'reduction_to_pole': {
-                    'value': False,
-                    'type': 'bool',
-                    'description': 'Apply Reduction to Pole transformation'
-                },
-                'remove_diurnal': {
-                    'value': True,
-                    'type': 'bool',
-                    'description': 'Remove diurnal variations'
+            'output_settings': {
+                'export_format': {
+                    'value': 'csv',
+                    'type': 'choice',
+                    'choices': ['csv', 'xlsx', 'json'],
+                    'description': 'Output file format'
                 }
             }
         }
     
     def validate_data(self, data: pd.DataFrame) -> bool:
-        """Validate magnetic data"""
-        # Auto-detect magnetic field column
+        """Validate magnetic data - basic checks for script integration"""
+        if data.empty:
+            raise ProcessingError("No data provided")
+            
+        # Basic column detection for magnetic data
         detected = self.detect_columns(data)
-        if 'magnetic' not in detected:
-            # Try common column names
-            mag_cols = ['Btotal1 [nT]', 'Btotal2 [nT]', 'Mag', 'Field', 'nT']
-            found = False
-            for col in data.columns:
-                if any(mc.lower() in col.lower() for mc in mag_cols):
-                    found = True
-                    break
-            if not found:
-                raise ProcessingError("No magnetic field column detected")
+        logger.debug(f"Detected columns: {detected}")
         
-        # Check for coordinate columns
-        if 'latitude' not in detected or 'longitude' not in detected:
-            raise ProcessingError("Latitude and longitude columns required")
+        # Check for basic data structure
+        if len(data.columns) < 2:
+            raise ProcessingError("Data must have at least 2 columns")
             
         return True
     
     def process(self, data: pd.DataFrame, params: Dict[str, Any], 
                 progress_callback: Optional[Callable] = None) -> ProcessingResult:
-        """Process magnetic data"""
+        """Process magnetic data using selected script"""
         try:
             if progress_callback:
                 progress_callback(0, "Starting magnetic processing...")
@@ -104,58 +65,27 @@ class MagneticProcessor(BaseProcessor):
             # Validate data
             self.validate_data(data)
             
-            # Detect columns
-            cols = self.detect_columns(data)
-            mag_col = cols.get('magnetic', self._find_mag_column(data))
+            # Get selected script and export format
+            script_name = params.get('script_selection', {}).get('script_name', {}).get('value', 'basic_processing')
+            export_format = params.get('output_settings', {}).get('export_format', {}).get('value', 'csv')
             
-            # Copy data
+            if progress_callback:
+                progress_callback(20, f"Running script: {script_name}...")
+            
+            # Copy data for processing
             result_data = data.copy()
             
-            # Preprocessing
+            # Basic preprocessing
             if progress_callback:
-                progress_callback(10, "Preprocessing data...")
+                progress_callback(50, "Preprocessing data...")
             result_data = self.preprocess(result_data)
             
-            # Apply filters
-            if params.get('filters', {}).get('apply_kalman', {}).get('value', True):
-                if progress_callback:
-                    progress_callback(30, "Applying Kalman filter...")
-                result_data['mag_filtered'] = self._kalman_filter(result_data[mag_col].values)
-            else:
-                result_data['mag_filtered'] = result_data[mag_col]
-            
-            if params.get('filters', {}).get('gaussian_sigma', {}).get('value', 0) > 0:
-                if progress_callback:
-                    progress_callback(40, "Applying Gaussian filter...")
-                sigma = params['filters']['gaussian_sigma']['value']
-                result_data['mag_filtered'] = gaussian_filter1d(
-                    result_data['mag_filtered'].values, sigma=sigma
-                )
-            
-            # Anomaly detection
+            # Execute selected processing script
             if progress_callback:
-                progress_callback(60, "Detecting anomalies...")
+                progress_callback(80, "Executing processing script...")
             
-            threshold = params.get('anomaly_detection', {}).get('threshold_std', {}).get('value', 3.0)
-            window = params.get('anomaly_detection', {}).get('window_size', {}).get('value', 50)
-            
-            result_data['anomaly_score'] = self._detect_anomalies(
-                result_data['mag_filtered'].values, 
-                threshold=threshold,
-                window_size=window
-            )
-            
-            # Calculate gradient (useful for edge detection)
-            if progress_callback:
-                progress_callback(80, "Calculating gradients...")
-            result_data['mag_gradient'] = np.gradient(result_data['mag_filtered'].values)
-            
-            # Mark anomalies
-            mean_val = result_data['mag_filtered'].mean()
-            std_val = result_data['mag_filtered'].std()
-            result_data['is_anomaly'] = (
-                np.abs(result_data['mag_filtered'] - mean_val) > threshold * std_val
-            )
+            # Placeholder for script execution - will be replaced with your scripts
+            result_data = self._execute_script(script_name, result_data, params, progress_callback)
             
             if progress_callback:
                 progress_callback(100, "Processing complete!")
@@ -163,16 +93,17 @@ class MagneticProcessor(BaseProcessor):
             # Prepare metadata
             metadata = {
                 'processor': 'magnetic',
-                'anomalies_found': int(result_data['is_anomaly'].sum()),
-                'mean_field': float(mean_val),
-                'std_field': float(std_val),
+                'script_used': script_name,
+                'data_shape': result_data.shape,
                 'parameters': params
             }
             
             return ProcessingResult(
                 success=True,
                 data=result_data,
-                metadata=metadata
+                metadata=metadata,
+                processing_script=script_name,
+                export_format=export_format
             )
             
         except Exception as e:
@@ -182,62 +113,52 @@ class MagneticProcessor(BaseProcessor):
                 error_message=str(e)
             )
     
-    def _find_mag_column(self, data: pd.DataFrame) -> str:
-        """Find the magnetic field column"""
-        mag_keywords = ['btotal', 'mag', 'field', 'nt', 'tesla']
-        for col in data.columns:
-            if any(kw in col.lower() for kw in mag_keywords):
-                return col
-        raise ProcessingError("Could not find magnetic field column")
+    def _execute_script(self, script_name: str, data: pd.DataFrame, 
+                       params: Dict[str, Any], progress_callback: Optional[Callable] = None) -> pd.DataFrame:
+        """Execute the selected magnetic processing script"""
+        logger.info(f"Executing magnetic script: {script_name}")
+        
+        # Basic processing placeholder - your scripts will replace this
+        if script_name == 'basic_processing':
+            return self._basic_processing(data, progress_callback)
+        else:
+            logger.warning(f"Unknown script: {script_name}, using basic processing")
+            return self._basic_processing(data, progress_callback)
     
-    def _kalman_filter(self, data: np.ndarray) -> np.ndarray:
-        """Simple Kalman filter implementation"""
-        # Initialize
-        n = len(data)
-        filtered = np.zeros(n)
+    def _basic_processing(self, data: pd.DataFrame, progress_callback: Optional[Callable] = None) -> pd.DataFrame:
+        """Basic magnetic data processing - placeholder for your scripts"""
+        logger.info("Running basic magnetic processing")
         
-        # Initial estimates
-        x_est = data[0]
-        p_est = 1.0
+        # Simple placeholder processing
+        result_data = data.copy()
         
-        # Process and measurement noise
-        q = 0.01  # Process noise
-        r = 0.1   # Measurement noise
+        # Add a simple processed column as example
+        if len(data.columns) > 0:
+            first_numeric_col = None
+            for col in data.columns:
+                if pd.api.types.is_numeric_dtype(data[col]):
+                    first_numeric_col = col
+                    break
+            
+            if first_numeric_col:
+                result_data[f'{first_numeric_col}_processed'] = data[first_numeric_col]
+                logger.debug(f"Added processed column based on: {first_numeric_col}")
         
-        for i in range(n):
-            # Prediction
-            x_pred = x_est
-            p_pred = p_est + q
-            
-            # Update
-            k_gain = p_pred / (p_pred + r)
-            x_est = x_pred + k_gain * (data[i] - x_pred)
-            p_est = (1 - k_gain) * p_pred
-            
-            filtered[i] = x_est
-            
-        return filtered
+        return result_data
     
-    def _detect_anomalies(self, data: np.ndarray, threshold: float = 3.0, 
-                         window_size: int = 50) -> np.ndarray:
-        """Detect anomalies using moving window statistics"""
-        n = len(data)
-        anomaly_scores = np.zeros(n)
+    def get_available_scripts(self) -> List[str]:
+        """Get list of available magnetic processing scripts"""
+        # This will be expanded when your scripts are added
+        return ['basic_processing']
+    
+    def update_script_parameters(self, script_name: str) -> Dict[str, Any]:
+        """Update parameter structure based on selected script"""
+        # This will be implemented to dynamically update UI based on script selection
+        base_params = self._define_parameters()
         
-        for i in range(n):
-            # Define window
-            start = max(0, i - window_size // 2)
-            end = min(n, i + window_size // 2)
-            
-            # Calculate local statistics
-            window_data = data[start:end]
-            local_mean = np.mean(window_data)
-            local_std = np.std(window_data)
-            
-            # Calculate anomaly score
-            if local_std > 0:
-                anomaly_scores[i] = abs(data[i] - local_mean) / local_std
-            else:
-                anomaly_scores[i] = 0
-                
-        return anomaly_scores 
+        # Add script-specific parameters here when your scripts are integrated
+        if script_name == 'basic_processing':
+            # No additional parameters for basic processing
+            pass
+        
+        return base_params 

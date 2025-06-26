@@ -265,6 +265,7 @@ class ProcessingWidget(QWidget):
         super().__init__()
         self.pipeline = ProcessingPipeline()
         self.current_data: Optional[pd.DataFrame] = None
+        self.current_input_file: Optional[str] = None
         self.setup_ui()
         self.connect_signals()
         
@@ -394,10 +395,13 @@ class ProcessingWidget(QWidget):
         self.pipeline.progress_updated.connect(self.on_progress_updated)
         self.pipeline.error_occurred.connect(self.on_error)
         
-    def set_data(self, data: pd.DataFrame):
+    def set_data(self, data: pd.DataFrame, input_file_path: Optional[str] = None):
         """Set data to process"""
         self.current_data = data
+        self.current_input_file = input_file_path
         logger.info(f"Data loaded: {len(data)} rows, {len(data.columns)} columns")
+        if input_file_path:
+            logger.info(f"Input file: {input_file_path}")
         
     def show_selection_view(self):
         """Show processor selection"""
@@ -471,7 +475,7 @@ class ProcessingWidget(QWidget):
             return
             
         # Start processing
-        self.pipeline.process_data(processor_id, self.current_data, params)
+        self.pipeline.process_data(processor_id, self.current_data, params, self.current_input_file)
         
     def cancel_processing(self):
         """Cancel current processing"""

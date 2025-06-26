@@ -16,9 +16,10 @@ from ..processing import ProcessingResult
 class ProcessingDialog(QDialog):
     """Modal dialog for data processing"""
     
-    def __init__(self, data: pd.DataFrame, parent=None):
+    def __init__(self, data: pd.DataFrame, parent=None, input_file_path: Optional[str] = None):
         super().__init__(parent)
         self.data = data
+        self.input_file_path = input_file_path
         self.result: Optional[ProcessingResult] = None
         self.setup_ui()
         
@@ -32,7 +33,7 @@ class ProcessingDialog(QDialog):
         
         # Processing widget
         self.processing_widget = ProcessingWidget()
-        self.processing_widget.set_data(self.data)
+        self.processing_widget.set_data(self.data, input_file_path=self.input_file_path)
         self.processing_widget.processing_complete.connect(self.on_processing_complete)
         layout.addWidget(self.processing_widget)
         
