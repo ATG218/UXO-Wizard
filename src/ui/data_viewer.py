@@ -117,6 +117,14 @@ class DataViewer(QWidget):
         self.stats_btn.clicked.connect(self.show_statistics)
         toolbar.addWidget(self.stats_btn)
         
+        # Metadata button  
+        self.metadata_btn = QToolButton()
+        self.metadata_btn.setText("Metadata")
+        self.metadata_btn.setToolTip("Show file metadata and header information")
+        self.metadata_btn.clicked.connect(self.show_metadata)
+        self.metadata_btn.setEnabled(False)  # Disabled until data with metadata is loaded
+        toolbar.addWidget(self.metadata_btn)
+        
         # Export button
         self.export_btn = QToolButton()
         self.export_btn.setText("Export")
@@ -151,12 +159,211 @@ class DataViewer(QWidget):
         layout.addWidget(self.table_view)
         self.setLayout(layout)
         
+    def _detect_csv_delimiter(self, filepath, encoding='utf-8', data_start_line=0):
+        """Simple delimiter detection by counting occurrences"""
+        try:
+            with open(filepath, 'r', encoding=encoding) as f:
+                lines = f.readlines()
+                
+            # Get sample from data section
+            if data_start_line > 0 and data_start_line < len(lines):
+                sample_lines = lines[data_start_line:data_start_line + 5]  # Just 5 lines
+            else:
+                sample_lines = lines[:10]  # First 10 lines
+                
+            # Count delimiters - no csv.Sniffer needed
+            delimiter_counts = {';': 0, ',': 0, '\t': 0, '|': 0}
+            
+            for line in sample_lines:
+                for delimiter in delimiter_counts:
+                    delimiter_counts[delimiter] += line.count(delimiter)
+            
+            # Return the most common delimiter
+            best_delimiter = max(delimiter_counts, key=delimiter_counts.get)
+            if delimiter_counts[best_delimiter] > 0:
+                logger.debug(f"Detected delimiter '{best_delimiter}'")
+                return best_delimiter
+            
+            # Default to semicolon (common for scientific data)
+            return ';'
+                
+        except Exception as e:
+            logger.warning(f"Error detecting delimiter: {e}")
+            return ';'
+    
+    def _clean_trailing_delimiters(self, df):
+        """Remove empty columns caused by trailing delimiters"""
+        try:
+            # Find columns that are completely empty or contain only NaN/empty strings
+            empty_cols = []
+            for col in df.columns:
+                if (df[col].isna().all() or 
+                    (df[col].astype(str).str.strip() == '').all() or
+                    col.startswith('Unnamed:')):
+                    # Check if this column has any actual data
+                    non_empty_count = df[col].dropna().astype(str).str.strip().str.len().sum()
+                    if non_empty_count == 0:
+                        empty_cols.append(col)
+            
+            if empty_cols:
+                logger.debug(f"Removing {len(empty_cols)} empty columns caused by trailing delimiters: {empty_cols}")
+                df = df.drop(columns=empty_cols)
+                
+            return df
+            
+        except Exception as e:
+            logger.warning(f"Error cleaning trailing delimiters: {e}")
+            return df
+    
+    def _parse_file_header(self, filepath, encoding='utf-8'):
+        """Parse multi-line header and find where tabular data starts"""
+        try:
+            with open(filepath, 'r', encoding=encoding) as f:
+                lines = f.readlines()
+            
+            metadata = {}
+            data_start_line = 0
+            header_line = None
+            
+            # Look for patterns that indicate data vs metadata
+            for i, line in enumerate(lines):
+                line = line.strip()
+                
+                # Skip empty lines
+                if not line:
+                    continue
+                    
+                # Check if this line looks like a data header (contains multiple delimiters and typical column patterns)
+                if any(pattern in line.lower() for pattern in ['timestamp', 'time', 'latitude', 'longitude', 'temp', 'volt', 'coord']):
+                    delimiter_count = max(line.count(';'), line.count(','), line.count('\t'), line.count('|'))
+                    if delimiter_count >= 3:  # Likely a header row with multiple columns
+                        header_line = i
+                        data_start_line = i + 1
+                        logger.debug(f"Found data header at line {i+1}: {line[:100]}...")
+                        break
+                
+                # Parse metadata from header section
+                if ':' in line and '=' not in line:
+                    parts = line.split(':', 1)
+                    if len(parts) == 2:
+                        key = parts[0].strip()
+                        value = parts[1].strip()
+                        metadata[key] = value
+                elif '=' in line and '[' in line and ']' in line:
+                    # Handle lines like "Digital Probe Voltage: +3.64 [V]"
+                    if ':' in line:
+                        parts = line.split(':', 1)
+                        if len(parts) == 2:
+                            key = parts[0].strip()
+                            value = parts[1].strip()
+                            metadata[key] = value
+            
+            # If no clear header found, try to detect first line that looks like data
+            if data_start_line == 0:
+                for i, line in enumerate(lines):
+                    line = line.strip()
+                    if not line:
+                        continue
+                        
+                    # Check if line has consistent delimiter pattern (likely data)
+                    for delim in [';', ',', '\t', '|']:
+                        if line.count(delim) >= 5:  # At least 5 delimiters suggests tabular data
+                            # Check if values look numeric (basic heuristic)
+                            parts = line.split(delim)
+                            numeric_count = 0
+                            for part in parts[:10]:  # Check first 10 parts
+                                part = part.strip()
+                                try:
+                                    float(part)
+                                    numeric_count += 1
+                                except ValueError:
+                                    pass
+                            
+                            if numeric_count >= len(parts) * 0.6:  # 60% numeric suggests data row
+                                data_start_line = i
+                                logger.debug(f"Detected data start at line {i+1} based on numeric content")
+                                break
+                    
+                    if data_start_line > 0:
+                        break
+            
+            return metadata, data_start_line, header_line
+            
+        except Exception as e:
+            logger.warning(f"Error parsing file header: {e}")
+            return {}, 0, None
+    
+    def _load_csv_enhanced(self, filepath):
+        """Load CSV file with smart header parsing and delimiter detection"""
+        # Try UTF-8 first (works for most modern files including ASCII)
+        encoding = 'utf-8'
+        
+        # Parse header to find metadata and data start
+        metadata, data_start_line, header_line = self._parse_file_header(filepath, encoding)
+        
+        if metadata:
+            logger.info(f"Found {len(metadata)} metadata entries in file header")
+        
+        # Detect delimiter from the data section
+        delimiter = self._detect_csv_delimiter(filepath, encoding, data_start_line)
+        
+        # Load the CSV
+        skip_rows = data_start_line if data_start_line > 0 else None
+        
+        try:
+            df = pd.read_csv(
+                filepath, 
+                delimiter=delimiter, 
+                encoding=encoding,
+                skiprows=skip_rows,
+                header=0
+            )
+            
+            # Clean up trailing delimiters and store metadata
+            df = self._clean_trailing_delimiters(df)
+            
+            if hasattr(df, 'attrs'):
+                df.attrs['file_metadata'] = metadata
+                df.attrs['data_start_line'] = data_start_line
+                df.attrs['source_file'] = filepath
+            
+            logger.info(f"Successfully loaded CSV: {df.shape[0]} rows, {df.shape[1]} columns")
+            return df
+            
+        except Exception as e:
+            # Simple fallback: try semicolon delimiter and different encoding
+            logger.warning(f"Primary load failed ({e}), trying fallback options")
+            
+            # Try different combinations
+            fallback_options = [
+                (';', 'latin-1'),
+                (',', 'utf-8'), 
+                (',', 'latin-1')
+            ]
+            
+            for delim, enc in fallback_options:
+                try:
+                    df = pd.read_csv(filepath, delimiter=delim, encoding=enc, skiprows=skip_rows, header=0)
+                    df = self._clean_trailing_delimiters(df)
+                    
+                    if hasattr(df, 'attrs'):
+                        df.attrs['file_metadata'] = metadata
+                        df.attrs['data_start_line'] = data_start_line  
+                        df.attrs['source_file'] = filepath
+                    
+                    logger.info(f"Loaded with fallback ({delim}, {enc}): {df.shape[0]} rows, {df.shape[1]} columns")
+                    return df
+                except Exception:
+                    continue
+                    
+            raise Exception(f"Failed to load CSV file with all attempted methods")
+
     def load_data(self, filepath):
         """Load data from file"""
         try:
             # Determine file type and load accordingly
             if filepath.endswith('.csv'):
-                df = pd.read_csv(filepath)
+                df = self._load_csv_enhanced(filepath)
             elif filepath.endswith(('.xlsx', '.xls')):
                 df = pd.read_excel(filepath)
             elif filepath.endswith('.json'):
@@ -177,8 +384,25 @@ class DataViewer(QWidget):
         """Set the DataFrame to display"""
         self.model.setData(df)
         
-        # Update UI
-        self.info_label.setText(f"Rows: {len(df)} | Columns: {len(df.columns)}")
+        # Check for metadata
+        has_metadata = hasattr(df, 'attrs') and 'file_metadata' in df.attrs
+        self.metadata_btn.setEnabled(has_metadata)
+        
+        # Update UI info label with basic info and key metadata
+        info_text = f"Rows: {len(df)} | Columns: {len(df.columns)}"
+        
+        if has_metadata:
+            metadata = df.attrs['file_metadata']
+            # Add some key metadata to the info label
+            key_info = []
+            for key in ['Date', 'Time', 'Field-Nr.', 'MagWalk', 'Samples']:
+                if key in metadata:
+                    key_info.append(f"{key}: {metadata[key]}")
+            
+            if key_info:
+                info_text += f" | {' | '.join(key_info[:2])}"  # Show first 2 metadata items
+        
+        self.info_label.setText(info_text)
         
         # Update column combo
         self.column_combo.clear()
@@ -239,6 +463,70 @@ class DataViewer(QWidget):
             stats_text += f"  Missing: {df[col].isna().sum()}\n\n"
             
         QMessageBox.information(self, "Statistics", stats_text)
+        
+    def show_metadata(self):
+        """Show file metadata and header information"""
+        df = self.model.get_dataframe()
+        if df.empty or not hasattr(df, 'attrs') or 'file_metadata' not in df.attrs:
+            QMessageBox.information(self, "Metadata", "No metadata available for this file.")
+            return
+            
+        metadata = df.attrs['file_metadata']
+        source_file = df.attrs.get('source_file', 'Unknown')
+        data_start_line = df.attrs.get('data_start_line', 0)
+        
+        # Build metadata display text
+        metadata_text = f"File: {source_file}\n"
+        metadata_text += f"Data starts at line: {data_start_line + 1}\n"
+        metadata_text += f"Total metadata entries: {len(metadata)}\n\n"
+        
+        # Group metadata by categories
+        survey_info = {}
+        probe_info = {}
+        gps_info = {}
+        other_info = {}
+        
+        for key, value in metadata.items():
+            key_lower = key.lower()
+            if any(term in key_lower for term in ['field', 'date', 'time', 'walk', 'sample']):
+                survey_info[key] = value
+            elif any(term in key_lower for term in ['probe', 'voltage', 'temperature', 'firmware']):
+                probe_info[key] = value
+            elif 'gps' in key_lower:
+                gps_info[key] = value
+            else:
+                other_info[key] = value
+        
+        # Display organized metadata
+        if survey_info:
+            metadata_text += "=== Survey Information ===\n"
+            for key, value in survey_info.items():
+                metadata_text += f"{key}: {value}\n"
+            metadata_text += "\n"
+            
+        if probe_info:
+            metadata_text += "=== Probe Settings ===\n"
+            for key, value in probe_info.items():
+                metadata_text += f"{key}: {value}\n"
+            metadata_text += "\n"
+            
+        if gps_info:
+            metadata_text += "=== GPS Information ===\n"
+            for key, value in gps_info.items():
+                metadata_text += f"{key}: {value}\n"
+            metadata_text += "\n"
+            
+        if other_info:
+            metadata_text += "=== Other Information ===\n"
+            for key, value in other_info.items():
+                metadata_text += f"{key}: {value}\n"
+        
+        # Show in a scrollable dialog with content displayed directly
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("File Metadata")
+        dialog.setText(metadata_text)
+        dialog.setStandardButtons(QMessageBox.Ok)
+        dialog.exec()
         
     def export_data(self):
         """Export current view to file"""
