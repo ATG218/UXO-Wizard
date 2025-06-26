@@ -184,14 +184,6 @@ class MainWindow(QMainWindow):
         self.project_dock.setWidget(self.project_explorer)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.project_dock)
         
-        # Data Viewer Dock
-        self.data_dock = QDockWidget("Data Viewer", self)
-        self.data_dock.setObjectName("DataViewerDock")
-        self.data_viewer = DataViewer()
-        self.data_dock.setWidget(self.data_viewer)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.data_dock)
-        
-        
         # Console/Log Dock
         self.console_dock = QDockWidget("Console", self)
         self.console_dock.setObjectName("ConsoleDock")
@@ -206,9 +198,33 @@ class MainWindow(QMainWindow):
         self.map_dock.setWidget(self.map_widget)
         self.addDockWidget(Qt.RightDockWidgetArea, self.map_dock)
         
-        # Tabify docks - Console and Map together, Data separate  
+        # Tabify Console and Map together
         self.tabifyDockWidget(self.console_dock, self.map_dock)
-        self.map_dock.raise_()  # Map tab on top by default
+        self.map_dock.raise_()
+        
+        # Data Viewer Dock - at bottom spanning full width
+        self.data_dock = QDockWidget("Data Viewer", self)
+        self.data_dock.setObjectName("DataViewerDock")
+        self.data_viewer = DataViewer()
+        self.data_dock.setWidget(self.data_viewer)
+        self.data_dock.setMinimumHeight(200)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.data_dock)
+        
+        # Configure corners and force layout after a brief delay
+        QTimer.singleShot(50, self._setup_dock_layout)
+        
+    def _setup_dock_layout(self):
+        """Set up dock layout to ensure data dock spans full width"""
+        # Configure corners so bottom dock spans full width
+        self.setCorner(Qt.BottomLeftCorner, Qt.BottomDockWidgetArea)
+        self.setCorner(Qt.BottomRightCorner, Qt.BottomDockWidgetArea)
+        
+        # Make sure the data dock is actually at the bottom
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.data_dock)
+        
+        # Set some reasonable proportions
+        self.resizeDocks([self.project_dock, self.console_dock], [250, 250], Qt.Horizontal)
+        self.resizeDocks([self.data_dock], [200], Qt.Vertical)
         
         # Add dock toggles to View menu
         self.dock_menu.addAction(self.project_dock.toggleViewAction())
@@ -369,29 +385,32 @@ class MainWindow(QMainWindow):
         logger.info(f"Changed theme to: {theme_name}")
         
     def open_file(self, filepath):
-        """Open a file in a new tab"""
+        """Open a file in appropriate viewer"""
         logger.info(f"Opening file: {filepath}")
         
         try:
-            # Check if file is already open
             filename = filepath.split('/')[-1]
+            
+            # Handle data files - open ONLY in the bottom data viewer dock
+            if filepath.lower().endswith(('.csv', '.xlsx', '.xls', '.json')):
+                # Load data in the main data viewer dock
+                self.data_viewer.load_data(filepath)
+                self.data_dock.show()
+                self.data_dock.raise_()  # Bring data viewer to front
+                
+                # Update status
+                self.status_label.setText(f"Data loaded: {filename}")
+                logger.info(f"Data file loaded in bottom dock: {filepath}")
+                return
+            
+            # Handle other files - check if already open in tabs
             for i in range(self.central_tabs.count()):
                 if self.central_tabs.tabText(i) == filename:
                     self.central_tabs.setCurrentIndex(i)
                     return
             
-            # Create appropriate viewer based on file type
-            if filepath.lower().endswith(('.csv', '.xlsx', '.xls', '.json')):
-                # Create a new DataViewer instance for this file
-                data_viewer = DataViewer()
-                data_viewer.load_data(filepath)
-                widget = data_viewer
-                
-                # Also update the main data viewer dock
-                self.data_viewer.load_data(filepath)
-                self.data_dock.raise_()  # Bring data viewer to front
-                
-            elif filepath.lower().endswith(('.txt', '.dat', '.log')):
+            # Create appropriate viewer for non-data files
+            if filepath.lower().endswith(('.txt', '.dat', '.log')):
                 # Text file viewer
                 widget = self.create_text_viewer(filepath)
                 
@@ -402,7 +421,7 @@ class MainWindow(QMainWindow):
                 layout.addWidget(QLabel(f"File: {filepath}\nFile type not supported for viewing"))
                 widget.setLayout(layout)
             
-            # Add to tabs
+            # Add non-data files to central tabs
             self.central_tabs.addTab(widget, filename)
             self.central_tabs.setCurrentIndex(self.central_tabs.count() - 1)
             
