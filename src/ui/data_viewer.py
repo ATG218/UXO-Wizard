@@ -233,13 +233,26 @@ class DataViewer(QWidget):
                 if not line:
                     continue
                     
-                # Check if this line looks like a data header (contains multiple delimiters and typical column patterns)
-                if any(pattern in line.lower() for pattern in ['timestamp', 'time', 'latitude', 'longitude', 'temp', 'volt', 'coord']):
-                    delimiter_count = max(line.count(';'), line.count(','), line.count('\t'), line.count('|'))
-                    if delimiter_count >= 3:  # Likely a header row with multiple columns
+                # Check if this line looks like a data header (contains multiple delimiters and
+                # has "timestamp" as the first token – a much stronger indicator for the start
+                # of tabular data than the earlier fuzzy approach that triggered on any "time"
+                # occurrence and mis-classified explanatory lines such as the "GGA Quality" row).
+
+                delimiter_count = max(line.count(';'), line.count(','), line.count('\t'), line.count('|'))
+
+                if delimiter_count >= 3:
+                    # Split by the most common delimiter in this line and inspect the first token.
+                    # We choose the delimiter that appears most frequently in the current line to
+                    # make the split (works even before global delimiter detection has run).
+                    delim = max([';', ',', '\t', '|'], key=line.count)
+                    tokens = [t.strip().lower() for t in line.split(delim)]
+
+                    if tokens and 'timestamp' in tokens[0]:
                         header_line = i
                         data_start_line = i + 1
-                        logger.debug(f"Found data header at line {i+1}: {line[:100]}...")
+                        logger.debug(
+                            f"Found data header at line {i + 1}: {line[:100]}..."
+                        )
                         break
                 
                 # Parse metadata from header section
@@ -307,20 +320,48 @@ class DataViewer(QWidget):
         # Detect delimiter from the data section
         delimiter = self._detect_csv_delimiter(filepath, encoding, data_start_line)
         
-        # Load the CSV
-        skip_rows = data_start_line if data_start_line > 0 else None
+        # ------------------------------------------------------------------
+        # Determine how many lines to skip so that the *detected* header line
+        # is preserved and used as the DataFrame header. The previous logic
+        # skipped `data_start_line` which accidentally discarded the header
+        # row and caused the first data row to be interpreted as the header
+        # when metadata lines were present (e.g. in mag.csv).  We now skip
+        # the lines **before** the detected header instead.
+        # ------------------------------------------------------------------
+
+        if header_line is not None and header_line >= 0:
+            # Skip everything *before* the header line – pandas will then use
+            # the first remaining line (the actual header) for column names.
+            skip_rows = header_line
+        else:
+            # Fallback to previous behaviour when no explicit header line was
+            # found (e.g. files that start immediately with column names).
+            skip_rows = data_start_line if data_start_line > 0 else None
+        
+        # Using skiprows=0 is equivalent to not passing the argument at all,
+        # but some pandas versions raise on integer 0, so normalise here.
+        if skip_rows == 0:
+            skip_rows = None
         
         try:
             df = pd.read_csv(
-                filepath, 
-                delimiter=delimiter, 
+                filepath,
+                delimiter=delimiter,
                 encoding=encoding,
                 skiprows=skip_rows,
-                header=0
+                header=0  # first non-skipped line now safely holds the column names
             )
             
-            # Clean up trailing delimiters and store metadata
+            # Clean up trailing delimiters
             df = self._clean_trailing_delimiters(df)
+
+            # ------------------------------------------------------------------
+            # Normalise column names: remove leading/trailing whitespace that can
+            # occur when the delimiter is directly followed by a space (common
+            # in semicolon-separated logger files). This avoids columns showing
+            # up with awkward spaces like " B1x [nT]" in the UI.
+            # ------------------------------------------------------------------
+            df.columns = df.columns.str.strip()
             
             if hasattr(df, 'attrs'):
                 df.attrs['file_metadata'] = metadata
@@ -343,8 +384,25 @@ class DataViewer(QWidget):
             
             for delim, enc in fallback_options:
                 try:
-                    df = pd.read_csv(filepath, delimiter=delim, encoding=enc, skiprows=skip_rows, header=0)
+                    df = pd.read_csv(
+                        filepath,
+                        delimiter=delim,
+                        encoding=enc,
+                        skiprows=skip_rows,
+                        header=0
+                    )
                     df = self._clean_trailing_delimiters(df)
+                    
+                    # Clean up trailing delimiters
+                    df = self._clean_trailing_delimiters(df)
+
+                    # ------------------------------------------------------------------
+                    # Normalise column names: remove leading/trailing whitespace that can
+                    # occur when the delimiter is directly followed by a space (common
+                    # in semicolon-separated logger files). This avoids columns showing
+                    # up with awkward spaces like " B1x [nT]" in the UI.
+                    # ------------------------------------------------------------------
+                    df.columns = df.columns.str.strip()
                     
                     if hasattr(df, 'attrs'):
                         df.attrs['file_metadata'] = metadata
