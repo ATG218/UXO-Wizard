@@ -2,20 +2,24 @@
 Main Application Window for UXO Wizard Desktop Suite
 """
 
-from PySide6.QtWidgets import (
+import os
+# Ensure consistent Qt binding
+os.environ["QT_API"] = "pyside6"
+
+from qtpy.QtWidgets import (
     QMainWindow, QApplication, QDockWidget, QMenuBar, QMenu, QToolBar,
     QStatusBar, QVBoxLayout, QWidget, QTabWidget, QSplitter,
-    QMessageBox, QLabel, QProgressBar
+    QMessageBox, QLabel, QProgressBar, QFileDialog, QTextEdit
 )
-from PySide6.QtCore import Qt, QSettings, Signal, QTimer, QDir
-from PySide6.QtGui import QIcon, QKeySequence, QAction
+from qtpy.QtCore import Qt, QSettings, Signal, QTimer, QDir
+from qtpy.QtGui import QIcon, QKeySequence, QAction
 from loguru import logger
 
 from .project_explorer import ProjectExplorer
 from .console_widget import ConsoleWidget
 from .data_viewer import DataViewer
 from .themes import ThemeManager
-from .map_widget import MapWidget
+from .map_widget_advanced import MapWidgetAdvanced
 
 
 class MainWindow(QMainWindow):
@@ -42,8 +46,8 @@ class MainWindow(QMainWindow):
         
     def setup_ui(self):
         """Initialize the main UI structure"""
-        self.setWindowTitle("UXO Wizard Desktop Suite")
-        self.setGeometry(100, 100, 1400, 900)
+        self.setWindowTitle("UXO Wizard Desktop Suite - Advanced")
+        self.setGeometry(50, 50, 1600, 1000)  # Larger for advanced map features
         
         # Central widget with tab system
         self.central_tabs = QTabWidget()
@@ -191,10 +195,10 @@ class MainWindow(QMainWindow):
         self.console_dock.setWidget(self.console_widget)
         self.addDockWidget(Qt.RightDockWidgetArea, self.console_dock)
 
-        # Map Preview Dock
-        self.map_dock = QDockWidget("Map Preview", self)
-        self.map_dock.setObjectName("MapPreviewDock")
-        self.map_widget = MapWidget()
+        # Advanced Map Dock
+        self.map_dock = QDockWidget("Advanced Map", self)
+        self.map_dock.setObjectName("AdvancedMapDock")
+        self.map_widget = MapWidgetAdvanced()
         self.map_dock.setWidget(self.map_widget)
         self.addDockWidget(Qt.RightDockWidgetArea, self.map_dock)
         
@@ -223,7 +227,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.BottomDockWidgetArea, self.data_dock)
         
         # Set some reasonable proportions
-        self.resizeDocks([self.project_dock, self.console_dock], [250, 250], Qt.Horizontal)
+        self.resizeDocks([self.project_dock, self.console_dock], [180, 400], Qt.Horizontal)
         self.resizeDocks([self.data_dock], [200], Qt.Vertical)
         
         # Add dock toggles to View menu
@@ -253,7 +257,7 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.progress_bar)
         
         # Coordinates display
-        self.coord_label = QLabel("No data")
+        self.coord_label = QLabel("Click map for coordinates")
         self.status_bar.addPermanentWidget(self.coord_label)
         
         # Memory usage
@@ -280,15 +284,31 @@ class MainWindow(QMainWindow):
         # NOTE: Map integration removed for clean processor architecture
         # self.data_viewer.data_selected.connect(self.update_map_with_data)
         
+        # NEW: Connect DataViewer layer creation to map
+        # This enables the "Plot on Map" button functionality
+        self.data_viewer.layer_created.connect(lambda layer: (
+            self.map_widget.add_layer_realtime(layer),
+            self.map_dock.raise_(),  # Bring map to front
+            logger.info(f"Added layer '{layer.name}' from DataViewer to map")
+        ))
+        
+        # Advanced map connections
+        self.map_widget.coordinates_clicked.connect(self.on_map_coordinates_clicked)
+        
     def on_project_changed(self, project_path):
         """Handle project path changes"""
         if project_path:
             # Project opened
             folder_name = project_path.split('/')[-1]
-            self.setWindowTitle(f"UXO Wizard Desktop Suite - {folder_name}")
+            self.setWindowTitle(f"UXO Wizard Desktop Suite - Advanced - {folder_name}")
         else:
             # Project closed
-            self.setWindowTitle("UXO Wizard Desktop Suite")
+            self.setWindowTitle("UXO Wizard Desktop Suite - Advanced")
+            
+    def on_map_coordinates_clicked(self, lat, lon):
+        """Handle map coordinate clicks"""
+        self.coord_label.setText(f"Lat: {lat:.6f}, Lon: {lon:.6f}")
+        logger.debug(f"Map clicked at: {lat:.6f}, {lon:.6f}")
         
     def update_map_with_data(self, data):
         """Update map with data from the data viewer"""
@@ -321,7 +341,7 @@ class MainWindow(QMainWindow):
         
     def open_project(self):
         """Open an existing project folder"""
-        from PySide6.QtWidgets import QFileDialog
+        # QFileDialog already imported at top
         
         logger.info("Opening project folder")
         
@@ -435,7 +455,7 @@ class MainWindow(QMainWindow):
     
     def create_text_viewer(self, filepath):
         """Create a simple text viewer widget"""
-        from PySide6.QtWidgets import QTextEdit, QVBoxLayout
+        # QTextEdit and QVBoxLayout already imported at top
         
         widget = QWidget()
         layout = QVBoxLayout()

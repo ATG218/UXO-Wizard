@@ -125,7 +125,7 @@ class MapWidget(QWidget):
         # Create map centered on Norway
         self.current_map = folium.Map(
             location=[64.5, 11.0],  # Center of Norway
-            zoom_start=5,
+            zoom_start=3,  # Less zoomed in
             control_scale=True,
             tiles=None  # Custom tiles only
         )
@@ -413,7 +413,7 @@ class MapWidget(QWidget):
             self.update_map_display()
             logger.info("Map refreshed")
     
-    def set_map_center(self, lat, lon, zoom=10):
+    def set_map_center(self, lat, lon, zoom=6):
         """Set map center to specific coordinates"""
         try:
             if self.current_map:

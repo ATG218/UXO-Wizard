@@ -148,3 +148,7 @@ dmypy.json
 # Documentation builds
 docs/_build/mag/
 mag_import/
+
+# Mission Plans
+
+Mission_Plans/

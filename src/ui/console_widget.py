@@ -32,7 +32,7 @@ class ConsoleWidget(QWidget):
         # Log level filter
         self.level_combo = QComboBox()
         self.level_combo.addItems(["ALL", "DEBUG", "INFO", "WARNING", "ERROR"])
-        self.level_combo.setCurrentText("INFO")
+        self.level_combo.setCurrentText("ALL")
         self.level_combo.currentTextChanged.connect(self.filter_logs)
         toolbar.addWidget(QLabel("Level:"))
         toolbar.addWidget(self.level_combo)

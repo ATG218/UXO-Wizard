@@ -5,14 +5,25 @@ Data Viewer Widget for UXO Wizard - Display and analyze tabular data
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableView, QToolBar, 
     QComboBox, QToolButton, QLabel, QLineEdit,
-    QHeaderView, QMenu, QMessageBox, QDialog, QDialogButtonBox
+    QHeaderView, QMenu, QMessageBox, QDialog, QDialogButtonBox,
+    QTabWidget, QHBoxLayout, QPushButton, QFileDialog
 )
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtCore import Qt, Signal, QAbstractTableModel, QModelIndex
 from PySide6.QtGui import QKeySequence
 import pandas as pd
 import numpy as np
 from loguru import logger
+from typing import Optional, Tuple
+import os
+
+# Import map layer types for integration
+try:
+    from .map.layer_types import UXOLayer, LayerType, GeometryType, LayerStyle, LayerSource
+    MAP_INTEGRATION_AVAILABLE = True
+except ImportError:
+    logger.warning("Map integration not available - layer_types module not found")
+    MAP_INTEGRATION_AVAILABLE = False
 
 
 class PandasModel(QAbstractTableModel):
@@ -71,19 +82,25 @@ class PandasModel(QAbstractTableModel):
         return self._data.copy()
 
 
-class DataViewer(QWidget):
-    """Widget for viewing and analyzing tabular data"""
+class DataViewerTab(QWidget):
+    """Individual tab for viewing and analyzing a single dataset"""
     
     # Signals
     data_selected = Signal(object)  # Emits selected data
+    layer_created = Signal(object)  # Emits UXOLayer for map integration
+    tab_title_changed = Signal(str)  # Emits when tab title should change
     
-    def __init__(self):
+    def __init__(self, filepath=None):
         super().__init__()
-        self.current_file = None
+        self.current_file = filepath
         self.setup_ui()
         
+        # Load data if filepath provided
+        if filepath:
+            self.load_data(filepath)
+        
     def setup_ui(self):
-        """Initialize the UI"""
+        """Initialize the UI for this tab"""
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         
@@ -139,6 +156,14 @@ class DataViewer(QWidget):
         self.process_btn.setToolTip("Open Processing Menu")
         self.process_btn.clicked.connect(self.show_processing_menu)
         toolbar.addWidget(self.process_btn)
+        
+        # Plot on Map button (only show if map integration available)
+        if MAP_INTEGRATION_AVAILABLE:
+            self.plot_map_btn = QToolButton()
+            self.plot_map_btn.setText("📍 Plot on Map")
+            self.plot_map_btn.setToolTip("Visualize this table as points on the map (requires coordinate columns)")
+            self.plot_map_btn.clicked.connect(self.plot_on_map)
+            toolbar.addWidget(self.plot_map_btn)
         
         # Table view
         self.table_view = QTableView()
@@ -432,6 +457,11 @@ class DataViewer(QWidget):
                 
             self.set_dataframe(df)
             self.current_file = filepath
+            
+            # Update tab title
+            filename = os.path.basename(filepath)
+            self.tab_title_changed.emit(filename)
+            
             logger.info(f"Loaded data from: {filepath}")
             
         except Exception as e:
@@ -467,14 +497,37 @@ class DataViewer(QWidget):
         self.column_combo.addItem("All columns")
         self.column_combo.addItems(df.columns.tolist())
         
-        # Auto-resize columns
+        # Improve header sizing for better fit in tabs
+        header = self.table_view.horizontalHeader()
+        
+        # First, resize to contents
         self.table_view.resizeColumnsToContents()
         
-        # Limit column width
-        header = self.table_view.horizontalHeader()
-        for i in range(len(df.columns)):
-            if header.sectionSize(i) > 200:
-                header.resizeSection(i, 200)
+        # Get available width and column count
+        available_width = self.table_view.viewport().width()
+        column_count = len(df.columns)
+        
+        if column_count > 0:
+            # Calculate optimal column distribution
+            total_content_width = sum(header.sectionSize(i) for i in range(column_count))
+            
+            if total_content_width > available_width:
+                # Content is too wide - use stretch to fit all columns
+                header.setSectionResizeMode(QHeaderView.Stretch)
+            else:
+                # Content fits - use interactive mode with some constraints
+                header.setSectionResizeMode(QHeaderView.Interactive)
+                
+                # Set reasonable bounds: min 80px, max 250px
+                for i in range(column_count):
+                    current_size = header.sectionSize(i)
+                    if current_size < 80:
+                        header.resizeSection(i, 80)
+                    elif current_size > 250:
+                        header.resizeSection(i, 250)
+                
+                # Enable stretch on last section to fill remaining space
+                header.setStretchLastSection(True)
                 
     def filter_columns(self, column):
         """Filter displayed columns"""
@@ -606,6 +659,12 @@ class DataViewer(QWidget):
         plot_action.triggered.connect(self.plot_selection)
         menu.addAction(plot_action)
         
+        # Add map plotting option if available
+        if MAP_INTEGRATION_AVAILABLE:
+            map_action = QAction("📍 Plot on Map", self)
+            map_action.triggered.connect(self.plot_on_map)
+            menu.addAction(map_action)
+        
         menu.exec_(self.table_view.mapToGlobal(position))
         
     def copy_selection(self):
@@ -688,4 +747,362 @@ class DataViewer(QWidget):
     
     def get_current_dataframe(self):
         """Get the current dataframe"""
-        return self.model.get_dataframe() 
+        return self.model.get_dataframe()
+    
+    def detect_coordinate_columns(self, df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
+        """Auto-detect latitude and longitude columns in DataFrame"""
+        columns = df.columns.tolist()
+        lat_col = None
+        lon_col = None
+        
+        # Common latitude column names
+        lat_keywords = ['lat', 'latitude', 'y', 'northing', 'north']
+        lon_keywords = ['lon', 'lng', 'longitude', 'x', 'easting', 'east']
+        
+        for col in columns:
+            col_lower = col.lower()
+            if any(keyword in col_lower for keyword in lat_keywords):
+                lat_col = col
+            elif any(keyword in col_lower for keyword in lon_keywords):
+                lon_col = col
+        
+        # Log what we found
+        if lat_col and lon_col:
+            logger.info(f"Detected coordinate columns: lat='{lat_col}', lon='{lon_col}'")
+        else:
+            logger.warning(f"Could not detect coordinate columns. Lat found: {lat_col}, Lon found: {lon_col}")
+            
+        return lat_col, lon_col
+    
+    def plot_on_map(self):
+        """Create map layer from current data and emit signal"""
+        if not MAP_INTEGRATION_AVAILABLE:
+            QMessageBox.warning(self, "Map Integration", "Map integration is not available.")
+            return
+            
+        layer = self.create_map_layer()
+        if layer:
+            self.layer_created.emit(layer)
+            logger.info(f"Emitted map layer: {layer.name}")
+            QMessageBox.information(self, "Map Layer Created", 
+                                  f"Layer '{layer.name}' has been sent to the map.\n"
+                                  f"Points: {len(layer.data)} | Bounds: {layer.bounds}")
+        else:
+            QMessageBox.warning(self, "No Coordinates", 
+                              "Could not create map layer.\n"
+                              "Make sure your data contains coordinate columns.")
+    
+    def create_map_layer(self) -> Optional['UXOLayer']:
+        """Create UXOLayer from current DataFrame"""
+        df = self.model.get_dataframe()
+        
+        if df.empty:
+            logger.warning("Cannot create map layer from empty DataFrame")
+            return None
+            
+        # Auto-detect geometry columns
+        lat_col, lon_col = self.detect_coordinate_columns(df)
+        
+        if not lat_col or not lon_col:
+            logger.warning("No valid coordinate columns found in data")
+            return None
+            
+        # Calculate bounds
+        try:
+            lats = df[lat_col].dropna()
+            lons = df[lon_col].dropna()
+            
+            if len(lats) == 0 or len(lons) == 0:
+                logger.warning("No valid coordinates in data")
+                return None
+                
+            bounds = [
+                float(lons.min()), float(lats.min()),
+                float(lons.max()), float(lats.max())
+            ]
+        except Exception as e:
+            logger.error(f"Error calculating bounds: {e}")
+            bounds = None
+            
+        # Create layer name
+        if self.current_file:
+            import os
+            base_name = os.path.basename(self.current_file)
+            layer_name = f"Survey Data - {base_name}"
+        else:
+            layer_name = f"Survey Data - {len(df)} points"
+            
+        # Extract metadata
+        metadata = {
+            "row_count": len(df),
+            "columns": df.columns.tolist(),
+            "lat_column": lat_col,
+            "lon_column": lon_col,
+            "source_file": self.current_file or "Unknown"
+        }
+        
+        # Add any file metadata if available
+        if hasattr(df, 'attrs') and 'file_metadata' in df.attrs:
+            metadata['file_metadata'] = df.attrs['file_metadata']
+            
+        # Create style based on data characteristics
+        style = self.create_default_style(df)
+        
+        # Create UXOLayer
+        try:
+            layer = UXOLayer(
+                name=layer_name,
+                layer_type=LayerType.POINTS,
+                data=df,
+                geometry_type=GeometryType.POINT,
+                style=style,
+                metadata=metadata,
+                source=LayerSource.DATA_VIEWER,
+                bounds=bounds
+            )
+            
+            logger.info(f"Created UXO layer: {layer_name} with {len(df)} points")
+            return layer
+            
+        except Exception as e:
+            logger.error(f"Failed to create UXOLayer: {e}")
+            return None
+    
+    def create_default_style(self, df: pd.DataFrame) -> 'LayerStyle':
+        """Create default style based on data characteristics"""
+        # Basic style
+        style = LayerStyle()
+        
+        # Adjust based on data size
+        num_points = len(df)
+        if num_points > 10000:
+            # For large datasets, use smaller points and enable clustering
+            style.point_size = 4
+            style.enable_clustering = True
+            style.cluster_distance = 80
+        elif num_points > 1000:
+            style.point_size = 5
+            style.enable_clustering = True
+            style.cluster_distance = 50
+        else:
+            # For small datasets, use larger points without clustering
+            style.point_size = 8
+            style.enable_clustering = False
+            
+        # Check for anomaly or classification columns
+        columns_lower = [col.lower() for col in df.columns]
+        
+        if any('anomaly' in col for col in columns_lower):
+            # If anomaly data, use red color
+            style.point_color = "#FF0000"
+        elif any('class' in col or 'type' in col for col in columns_lower):
+            # If classification data, prepare for graduated colors
+            style.use_graduated_colors = True
+            style.color_ramp = ["#0066CC", "#00CC66", "#FFCC00", "#FF6600", "#CC00CC"]
+            
+        return style
+
+
+class DataViewer(QWidget):
+    """Main data viewer widget with tabbed interface for multiple datasets"""
+    
+    # Signals
+    data_selected = Signal(object)  # Emits selected data from active tab
+    layer_created = Signal(object)  # Emits UXOLayer for map integration
+    
+    def __init__(self):
+        super().__init__()
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Initialize the UI"""
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Tab widget (no top toolbar needed - tabs handle everything)
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setTabsClosable(True)
+        self.tab_widget.setMovable(True)
+        self.tab_widget.tabCloseRequested.connect(self.close_tab)
+        self.tab_widget.currentChanged.connect(self.tab_changed)
+        
+        # Add context menu for tab bar to create new tabs
+        self.tab_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tab_widget.customContextMenuRequested.connect(self.show_tab_context_menu)
+        
+        layout.addWidget(self.tab_widget)
+        self.setLayout(layout)
+        
+    def add_empty_tab(self):
+        """Add an empty data viewer tab"""
+        tab = DataViewerTab()
+        
+        # Connect signals
+        tab.data_selected.connect(self.data_selected)
+        tab.layer_created.connect(self.layer_created)
+        tab.tab_title_changed.connect(lambda title: self.update_tab_title(tab, title))
+        
+        # Add tab
+        index = self.tab_widget.addTab(tab, "New Tab")
+        self.tab_widget.setCurrentIndex(index)
+        
+        # Update UI state
+        self.update_ui_state()
+        
+        return tab
+        
+    def add_file_tab(self, filepath):
+        """Add a new tab with a specific file loaded"""
+        tab = DataViewerTab(filepath)
+        
+        # Connect signals
+        tab.data_selected.connect(self.data_selected)
+        tab.layer_created.connect(self.layer_created)
+        tab.tab_title_changed.connect(lambda title: self.update_tab_title(tab, title))
+        
+        # Add tab with filename as title
+        filename = os.path.basename(filepath)
+        index = self.tab_widget.addTab(tab, filename)
+        self.tab_widget.setCurrentIndex(index)
+        
+        # Update UI state
+        self.update_ui_state()
+        
+        return tab
+        
+    def show_tab_context_menu(self, position):
+        """Show context menu for tab bar"""
+        menu = QMenu()
+        
+        new_tab_action = QAction("📄 Open Data File", self)
+        new_tab_action.setToolTip("Open a new data file in a new tab")
+        new_tab_action.triggered.connect(self.open_new_tab)
+        menu.addAction(new_tab_action)
+        
+        # Only show close option if we have actual data tabs (not welcome tab)
+        current_tab = self.get_current_tab()
+        has_data_tabs = (self.tab_widget.count() > 0 and 
+                        isinstance(current_tab, DataViewerTab))
+        
+        if has_data_tabs:
+            menu.addSeparator()
+            
+            close_tab_action = QAction("✕ Close Current Tab", self)
+            close_tab_action.triggered.connect(self.close_current_tab)
+            menu.addAction(close_tab_action)
+        
+        # Show menu at the clicked position
+        menu.exec_(self.tab_widget.mapToGlobal(position))
+        
+    def open_new_tab(self):
+        """Open file dialog and create new tab with selected file"""
+        file_dialog = QFileDialog()
+        file_dialog.setNameFilter("Data files (*.csv *.xlsx *.xls *.json);;CSV files (*.csv);;Excel files (*.xlsx *.xls);;JSON files (*.json);;All files (*)")
+        
+        if file_dialog.exec() == QFileDialog.Accepted:
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                filepath = selected_files[0]
+                try:
+                    self.add_file_tab(filepath)
+                except Exception as e:
+                    logger.error(f"Error opening file {filepath}: {e}")
+                    QMessageBox.critical(self, "Error", f"Failed to open file:\n{str(e)}")
+                    
+    def close_tab(self, index):
+        """Close tab at given index"""
+        # Always remove the tab
+        self.tab_widget.removeTab(index)
+        
+        # Update UI state (will show welcome message if no tabs remain)
+        self.update_ui_state()
+        
+    def close_current_tab(self):
+        """Close the currently active tab"""
+        current_index = self.tab_widget.currentIndex()
+        if current_index >= 0:
+            self.close_tab(current_index)
+            
+    def tab_changed(self, index):
+        """Handle tab change"""
+        self.update_ui_state()
+        
+        # Note: Removed automatic data emission to prevent unwanted map plotting
+        # Data should only be emitted when explicitly requested (e.g., via "Plot on Map" button)
+                
+    def update_tab_title(self, tab, title):
+        """Update the title of a specific tab"""
+        index = self.tab_widget.indexOf(tab)
+        if index >= 0:
+            self.tab_widget.setTabText(index, title)
+            
+    def update_ui_state(self):
+        """Update UI state based on current tabs"""
+        has_tabs = self.tab_widget.count() > 0
+        
+        # Show helpful message when no tabs are open
+        if not has_tabs:
+            placeholder = QWidget()
+            layout = QVBoxLayout()
+            layout.setAlignment(Qt.AlignCenter)
+            
+            label = QLabel("No data files open")
+            label.setAlignment(Qt.AlignCenter)
+            label.setStyleSheet("color: gray; font-size: 14px;")
+            
+            help_label = QLabel("Right-click here to open a new data file")
+            help_label.setAlignment(Qt.AlignCenter)
+            help_label.setStyleSheet("color: gray; font-size: 12px;")
+            
+            layout.addWidget(label)
+            layout.addWidget(help_label)
+            placeholder.setLayout(layout)
+            
+            self.tab_widget.addTab(placeholder, "Welcome")
+            # Make this tab not closable by temporarily disabling closable tabs
+            self.tab_widget.setTabsClosable(False)
+        else:
+            # Re-enable closable tabs when we have real data tabs
+            self.tab_widget.setTabsClosable(True)
+            
+    def get_current_tab(self) -> Optional[DataViewerTab]:
+        """Get the currently active tab"""
+        current_index = self.tab_widget.currentIndex()
+        if current_index >= 0:
+            return self.tab_widget.widget(current_index)
+        return None
+        
+    def load_data(self, filepath):
+        """Load data into current tab or create new tab"""
+        current_tab = self.get_current_tab()
+        
+        # Check if we have a welcome tab (placeholder) - replace it
+        if (self.tab_widget.count() == 1 and 
+            self.tab_widget.tabText(0) == "Welcome" and
+            not isinstance(current_tab, DataViewerTab)):
+            # Remove welcome tab and create new data tab
+            self.tab_widget.removeTab(0)
+            self.add_file_tab(filepath)
+        elif current_tab and isinstance(current_tab, DataViewerTab) and current_tab.get_current_dataframe().empty:
+            # Use current empty data tab
+            current_tab.load_data(filepath)
+        else:
+            # Create new tab
+            self.add_file_tab(filepath)
+            
+    def get_current_dataframe(self):
+        """Get the current DataFrame from active tab"""
+        current_tab = self.get_current_tab()
+        if current_tab and isinstance(current_tab, DataViewerTab):
+            return current_tab.get_current_dataframe()
+        return pd.DataFrame()
+        
+    def set_dataframe(self, df):
+        """Set DataFrame in current tab"""
+        current_tab = self.get_current_tab()
+        if current_tab and isinstance(current_tab, DataViewerTab):
+            current_tab.set_dataframe(df)
+        else:
+            # If no data tab exists, create one
+            tab = self.add_empty_tab()
+            tab.set_dataframe(df) 
