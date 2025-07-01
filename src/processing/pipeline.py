@@ -141,7 +141,8 @@ class ProcessingPipeline(QObject):
         self.current_worker = ProcessingWorker(
             processor.process,
             data,
-            params
+            params,
+            input_file_path=self.current_input_file
         )
         
         # Connect signals
@@ -245,6 +246,14 @@ class ProcessingPipeline(QObject):
     
     def _generate_filename(self, result: ProcessingResult) -> str:
         """Generate filename based on input and processing info"""
+        # Check if the script has already provided a specific filename
+        if hasattr(result, 'output_files') and result.output_files:
+            for output_file in result.output_files:
+                if output_file.file_type.lower() in ['csv', 'xlsx', 'json']:
+                    # Use the script-generated filename
+                    return os.path.basename(output_file.file_path)
+        
+        # Fallback to default filename generation
         # Get base name from input file
         if result.input_file_path:
             base_name = Path(result.input_file_path).stem
@@ -264,7 +273,10 @@ class ProcessingPipeline(QObject):
             ext = 'xlsx'
         
         # Format: {input_name}_{processor}_{script}_{timestamp}.{ext}
-        filename = f"{base_name}_{processor_type}_{script_name}_{timestamp}.{ext}"
+        if script_name == 'magbase_processing':
+            filename = f"{base_name}_magbase.{ext}"
+        else:
+            filename = f"{base_name}_{processor_type}_{script_name}_{timestamp}.{ext}"
         
         return filename
     

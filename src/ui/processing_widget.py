@@ -6,12 +6,12 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QComboBox, QProgressBar, QGroupBox, QScrollArea,
     QCheckBox, QSlider, QSpinBox, QDoubleSpinBox, QFrame,
-    QGraphicsOpacityEffect, QStackedWidget
+    QGraphicsOpacityEffect, QStackedWidget, QLineEdit, QFileDialog
 )
 from PySide6.QtCore import (
     Qt, Signal, QPropertyAnimation, QEasingCurve,
     QParallelAnimationGroup, QSequentialAnimationGroup,
-    QTimer, Property
+    QTimer, Property, QCoreApplication
 )
 from PySide6.QtGui import QPalette, QFont
 import pandas as pd
@@ -211,10 +211,83 @@ class ParameterWidget(QWidget):
             widget = QComboBox()
             widget.addItems(param_info.get('choices', []))
             widget.setCurrentText(str(value))
+        elif param_type == 'file':
+            # Create file selection widget
+            widget = self._create_file_widget(param_info, value)
         else:
             widget = QLabel(str(value))
             
         return widget
+        
+    def _create_file_widget(self, param_info: Dict[str, Any], value: str) -> QWidget:
+        """Create a file selection widget with browse button"""
+        file_widget = QWidget()
+        file_layout = QHBoxLayout()
+        file_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Line edit for file path
+        file_line_edit = QLineEdit()
+        file_line_edit.setText(str(value) if value else "")
+        file_line_edit.setPlaceholderText("Select file...")
+        file_line_edit.setMinimumWidth(200)
+        file_layout.addWidget(file_line_edit)
+        
+        # Browse button
+        browse_button = QPushButton("Browse...")
+        browse_button.setMaximumWidth(80)
+        
+        # Get file types for filter
+        file_types = param_info.get('file_types', ['*'])
+        if file_types and file_types != ['*']:
+            filter_str = f"Supported files ({' '.join(f'*{ext}' for ext in file_types)});;All files (*.*)"
+        else:
+            filter_str = "All files (*.*)"
+        
+        # Store file types and filter in widget for access in browse function
+        file_widget._file_types = file_types
+        file_widget._filter_str = filter_str
+        file_widget._line_edit = file_line_edit
+        
+        # Connect browse button - use a proper method reference
+        browse_button.clicked.connect(lambda checked, fw=file_widget: self._browse_file(fw))
+        file_layout.addWidget(browse_button)
+        
+        file_widget.setLayout(file_layout)
+        file_widget.file_line_edit = file_line_edit  # Store reference for value retrieval
+        
+        return file_widget
+    
+    def _browse_file(self, file_widget: QWidget):
+        """Handle file browsing for file widgets"""
+        try:
+            logger.debug(f"Opening file browser with filter: {file_widget._filter_str}")
+            
+            # Get the parent window for the dialog
+            parent_window = self
+            while parent_window.parent():
+                parent_window = parent_window.parent()
+            
+            logger.debug(f"Using parent window: {parent_window}")
+            
+            file_path, selected_filter = QFileDialog.getOpenFileName(
+                parent_window,
+                "Select Base Station File", 
+                "", 
+                file_widget._filter_str
+            )
+            
+            logger.debug(f"File dialog returned: path='{file_path}', filter='{selected_filter}'")
+            
+            if file_path:
+                file_widget._line_edit.setText(file_path)
+                logger.info(f"Selected file: {file_path}")
+            else:
+                logger.debug("File dialog was cancelled or no file selected")
+                
+        except Exception as e:
+            logger.error(f"Error in file browser: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
         
     def _connect_widget_signal(self, widget: QWidget, category: str, param_name: str):
         """Connect widget change signal"""
@@ -228,6 +301,10 @@ class ParameterWidget(QWidget):
             )
         elif isinstance(widget, QComboBox):
             widget.currentTextChanged.connect(
+                lambda val: self.value_changed.emit(category, param_name, val)
+            )
+        elif hasattr(widget, 'file_line_edit'):  # File widget
+            widget.file_line_edit.textChanged.connect(
                 lambda val: self.value_changed.emit(category, param_name, val)
             )
             
@@ -246,6 +323,8 @@ class ParameterWidget(QWidget):
                     value = widget.value()
                 elif isinstance(widget, QComboBox):
                     value = widget.currentText()
+                elif hasattr(widget, 'file_line_edit'):  # File widget
+                    value = widget.file_line_edit.text()
                 else:
                     value = param_info.get('value')
                     
@@ -259,7 +338,8 @@ class ProcessingWidget(QWidget):
     
     # Signals
     processing_complete = Signal(ProcessingResult)
-    data_updated = Signal(pd.DataFrame)
+    # NOTE: data_updated signal removed for clean processor architecture
+    # data_updated = Signal(pd.DataFrame)
     
     def __init__(self):
         super().__init__()
@@ -399,6 +479,8 @@ class ProcessingWidget(QWidget):
         """Set data to process"""
         self.current_data = data
         self.current_input_file = input_file_path
+        self.current_processor = None  # Track current processor for script switching
+        self._updating_parameters = False  # Flag to prevent recursive parameter updates
         logger.info(f"Data loaded: {len(data)} rows, {len(data.columns)} columns")
         if input_file_path:
             logger.info(f"Input file: {input_file_path}")
@@ -436,8 +518,12 @@ class ProcessingWidget(QWidget):
         # Create parameter widget
         logger.debug(f"Creating parameter widget with {len(processor.parameters)} parameter groups")
         self.params_widget = ParameterWidget(processor.parameters)
+        self.params_widget.value_changed.connect(self.on_parameter_changed)
         self.params_scroll.setWidget(self.params_widget)
         logger.debug("Created parameter widget and set it to scroll area")
+        
+        # Store current processor for script switching
+        self.current_processor = processor
         
         # Show processing view
         logger.debug("Showing processing view")
@@ -453,6 +539,69 @@ class ProcessingWidget(QWidget):
         processor_id = self.pipeline.detect_data_type(self.current_data)
         logger.info(f"Auto-detected processor: {processor_id}")
         self.select_processor(processor_id)
+    
+    def on_parameter_changed(self, category: str, param_name: str, value: Any):
+        """Handle parameter changes, particularly script selection"""
+        logger.debug(f"Parameter changed: {category}.{param_name} = {value}")
+        
+        # Prevent recursive parameter updates
+        if self._updating_parameters:
+            logger.debug("Skipping parameter change during update")
+            return
+        
+        # Handle script selection changes
+        if category == 'script_selection' and param_name == 'script_name' and self.current_processor:
+            logger.info(f"Script changed to: {value}")
+            
+            try:
+                # Set flag to prevent recursive updates
+                self._updating_parameters = True
+                
+                # Update processor's current script and regenerate parameters
+                logger.debug(f"Setting script to: {value}")
+                self.current_processor.set_script(value)
+                logger.debug(f"Script parameters: {len(self.current_processor.parameters)} categories")
+                
+                # Safely remove old widget first
+                old_widget = self.params_scroll.widget()
+                if old_widget:
+                    # Disconnect all signals first to prevent crashes
+                    try:
+                        # Disconnect the value_changed signal if it exists
+                        if hasattr(old_widget, 'value_changed'):
+                            old_widget.value_changed.disconnect()
+                    except:
+                        pass  # Ignore if already disconnected
+                    
+                    # Remove from scroll area
+                    self.params_scroll.takeWidget()
+                    # Set parent to None and schedule for deletion
+                    old_widget.setParent(None)
+                    old_widget.deleteLater()
+                    
+                # Process events to ensure cleanup happens
+                QCoreApplication.processEvents()
+                
+                # Create new parameter widget with new script parameters
+                logger.debug("Creating new ParameterWidget")
+                new_params_widget = ParameterWidget(self.current_processor.parameters)
+                logger.debug("Connecting value_changed signal")
+                new_params_widget.value_changed.connect(self.on_parameter_changed)
+                
+                # Set the new widget
+                logger.debug("Setting widget to scroll area")
+                self.params_scroll.setWidget(new_params_widget)
+                self.params_widget = new_params_widget
+                
+                logger.debug("Parameter widget recreated with new script parameters")
+                
+            except Exception as e:
+                logger.error(f"Error switching scripts: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+            finally:
+                # Always reset the flag
+                self._updating_parameters = False
         
     def start_processing(self):
         """Start processing with current parameters"""
@@ -499,9 +648,9 @@ class ProcessingWidget(QWidget):
             self.status_label.setText("Processing complete!")
             self.processing_complete.emit(result)
             
-            # Update data signal
-            if result.data is not None:
-                self.data_updated.emit(result.data)
+            # NOTE: Automatic data signal emission removed for clean processor architecture
+            # if result.data is not None:
+            #     self.data_updated.emit(result.data)
                 
             # Show success animation
             self._show_success_animation()

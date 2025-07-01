@@ -277,7 +277,8 @@ class MainWindow(QMainWindow):
         self.central_tabs.tabCloseRequested.connect(self.close_tab)
         
         # Data viewer connections
-        self.data_viewer.data_selected.connect(self.update_map_with_data)
+        # NOTE: Map integration removed for clean processor architecture
+        # self.data_viewer.data_selected.connect(self.update_map_with_data)
         
     def on_project_changed(self, project_path):
         """Handle project path changes"""

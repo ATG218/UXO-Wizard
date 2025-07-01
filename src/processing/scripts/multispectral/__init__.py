@@ -1,0 +1,3 @@
+"""
+Multispectral processing scripts
+"""

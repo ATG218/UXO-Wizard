@@ -4,6 +4,11 @@ UXO Wizard Desktop Suite - Main Entry Point
 """
 
 import sys
+import os
+
+# Add project root to Python path
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+
 from PySide6.QtWidgets import QApplication
 from src.ui.main_window import MainWindow
 from loguru import logger

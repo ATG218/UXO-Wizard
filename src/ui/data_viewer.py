@@ -602,11 +602,15 @@ class DataViewer(QWidget):
                     logger.info("Processing completed successfully, updating data viewer")
                     # Update the data viewer with processed data
                     self.set_dataframe(result.data)
-                    self.data_selected.emit(result.data)
+                    # NOTE: Automatic map signal emission removed for clean processor architecture
+                    # self.data_selected.emit(result.data)
                     
                     # Show success message with file output info
                     message = f"Processing completed successfully!\n"
-                    message += f"Anomalies found: {result.metadata.get('anomalies_found', 0)}\n"
+                    # Only show anomalies if they were actually found (not None or 0)
+                    anomalies_found = result.metadata.get('anomalies_found')
+                    if anomalies_found is not None and anomalies_found > 0:
+                        message += f"Anomalies found: {anomalies_found}\n"
                     message += f"Processing time: {result.processing_time:.2f}s\n"
                     if result.output_file_path:
                         message += f"\nOutput file saved to:\n{result.output_file_path}"
