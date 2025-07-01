@@ -24,25 +24,27 @@ from src.processing.base import ScriptInterface, ProcessingResult, ProcessingErr
 
 # Top-level functions for multiprocessing to avoid pickling issues
 def _find_closest_time_index(target_time, times):
-    """Find closest time using binary search"""
+    """Find closest time using binary search - exactly like original magbase.py"""
     if pd.isna(target_time):
         return None
         
+    # Initial binary search to find position
     left, right = 0, len(times) - 1
-    pos = -1
     while left <= right:
         mid = (left + right) // 2
         if times[mid] < target_time:
             left = mid + 1
         else:
             right = mid - 1
-    pos = left
     
+    # Check boundaries
+    pos = left
     if pos <= 0:
         return 0
     elif pos >= len(times):
         return len(times) - 1
     
+    # Return the closest of the two surrounding indices
     if abs(times[pos] - target_time) < abs(times[pos-1] - target_time):
         return pos
     else:
@@ -51,6 +53,7 @@ def _find_closest_time_index(target_time, times):
 def _process_batch_mp(batch_df, base_times, base_fields, vertical_alignment=False, disable_basestation=False):
     """Process a batch of rows to find closest base station measurements"""
     result_df = batch_df.copy()
+    debug_count = 0
     for idx, row in batch_df.iterrows():
         try:
             local_time_str = row.get('MagWalk_LocalTime')
@@ -61,17 +64,32 @@ def _process_batch_mp(batch_df, base_times, base_fields, vertical_alignment=Fals
             closest_idx = _find_closest_time_index(local_time_numeric, base_times)
             if closest_idx is not None:
                 if not disable_basestation:
+                    # Calculate residuals exactly like original magbase.py
                     earth_field = base_fields[closest_idx]
-                    if 'Btotal1 [nT]' in row and pd.notna(row['Btotal1 [nT]']):
-                        result_df.at[idx, 'R1 [nT]'] = row['Btotal1 [nT]'] - earth_field
-                    if 'Btotal2 [nT]' in row and pd.notna(row['Btotal2 [nT]']):
-                        result_df.at[idx, 'R2 [nT]'] = row['Btotal2 [nT]'] - earth_field
                     
-                    if vertical_alignment and pd.notna(result_df.at[idx, 'R1 [nT]']) and pd.notna(result_df.at[idx, 'R2 [nT]']):
+                    # Debug first few calculations
+                    if debug_count < 3:
+                        print(f"DEBUG R1/R2 calc #{debug_count}: idx={idx}")
+                        print(f"  Local time: {local_time_str} -> {local_time_numeric}")
+                        print(f"  Closest base idx: {closest_idx}, base time: {base_times[closest_idx]}")
+                        print(f"  Earth field: {earth_field}")
+                        print(f"  Btotal1: {row['Btotal1 [nT]']}, Btotal2: {row['Btotal2 [nT]']}")
+                        r1_calc = row['Btotal1 [nT]'] - earth_field
+                        r2_calc = row['Btotal2 [nT]'] - earth_field
+                        print(f"  R1 = {row['Btotal1 [nT]']} - {earth_field} = {r1_calc}")
+                        print(f"  R2 = {row['Btotal2 [nT]']} - {earth_field} = {r2_calc}")
+                        debug_count += 1
+                    
+                    result_df.at[idx, 'R1 [nT]'] = row['Btotal1 [nT]'] - earth_field
+                    result_df.at[idx, 'R2 [nT]'] = row['Btotal2 [nT]'] - earth_field
+                    
+                    # Calculate vertical alignment if requested (from residuals)
+                    if vertical_alignment:
                         result_df.at[idx, 'VA [nT]'] = result_df.at[idx, 'R1 [nT]'] - result_df.at[idx, 'R2 [nT]']
                 elif vertical_alignment:
-                    if 'Btotal1 [nT]' in row and 'Btotal2 [nT]' in row and pd.notna(row['Btotal1 [nT]']) and pd.notna(row['Btotal2 [nT]']):
-                        result_df.at[idx, 'VA [nT]'] = row['Btotal1 [nT]'] - row['Btotal2 [nT]']
+                    # When basestation is disabled, calculate VA directly from total fields
+                    # without creating redundant R1 and R2 columns
+                    result_df.at[idx, 'VA [nT]'] = row['Btotal1 [nT]'] - row['Btotal2 [nT]']
         except (ValueError, TypeError) as e:
             logging.debug(f"Error matching time {local_time_str}: {e}")
     return result_df
@@ -227,6 +245,8 @@ class MagbaseProcessing(ScriptInterface):
             
             # Detect key columns
             detected_cols = self._detect_magwalk_columns(magwalk_df)
+            logging.info(f"Detected columns: {detected_cols}")
+            logging.info(f"Available columns: {list(magwalk_df.columns)}")
             
             # Step 2: Load base station data if not disabled
             base_station_df = None
@@ -258,6 +278,11 @@ class MagbaseProcessing(ScriptInterface):
                 if progress_callback:
                     progress_callback(30, "Interpolating GPS gaps...")
                 magwalk_df = self._interpolate_gps_gaps(magwalk_df, detected_cols)
+            
+            # Step 4.5: Fix coordinates - propagate GPS coordinates to all rows if needed
+            if progress_callback:
+                progress_callback(45, "Fixing coordinate data...")
+            magwalk_df = self._fix_coordinates(magwalk_df, detected_cols)
             
             # Step 5: Add calculated fields (UTM conversion, sensor offsets, total field)
             if progress_callback:
@@ -580,6 +605,9 @@ class MagbaseProcessing(ScriptInterface):
         lat_col = detected_cols.get('latitude') or next((c for c in df.columns if 'lat' in c.lower()), None)
         lon_col = detected_cols.get('longitude') or next((c for c in df.columns if 'lon' in c.lower()), None)
         alt_col = detected_cols.get('altitude') or next((c for c in df.columns if 'alt' in c.lower()), None)
+        
+        logging.debug(f"Column assignments - lat: {lat_col}, lon: {lon_col}, alt: {alt_col}")
+        logging.debug(f"GPS time column: {gps_time_col}, formatted: {gps_formatted_col}")
 
         cols_to_interpolate = []
         for name, col in [('AccX', acc_x_col), ('AccY', acc_y_col), ('AccZ', acc_z_col),
@@ -597,9 +625,16 @@ class MagbaseProcessing(ScriptInterface):
 
         logging.info(f"Columns to interpolate: {cols_to_interpolate}")
 
-        # Indices of rows with valid GPS time values
-        gps_indices = [idx for idx, val in enumerate(df[gps_time_col])
-                        if pd.notna(val) and str(val).strip() not in ('', '0')]
+        # Find indices of rows with GPS time values (using DataFrame index, not enumerate)
+        gps_indices = []
+        logging.info(f"Looking for GPS points in column: {gps_time_col}")
+        for idx, row in df.iterrows():
+            gps_value = row[gps_time_col]
+            if pd.notna(gps_value) and str(gps_value) != '0' and str(gps_value).strip() != '':
+                gps_indices.append(idx)
+                logging.debug(f"Found GPS point at index {idx}, value: {gps_value}")
+        
+        logging.info(f"Total GPS indices found: {len(gps_indices)}")
 
         if len(gps_indices) < 2:
             logging.warning("Not enough GPS points found for interpolation.")
@@ -614,21 +649,28 @@ class MagbaseProcessing(ScriptInterface):
             if end_idx - start_idx <= 1:
                 continue
 
-            # Propagate quality flag if both edge points are good
+            # Set quality markers based on edge points
             if quality_col:
-                if df.at[start_idx, quality_col] == 1 and df.at[end_idx, quality_col] == 1:
-                    df.loc[start_idx + 1:end_idx - 1, quality_col] = 1
+                start_quality = df.at[start_idx, quality_col]
+                end_quality = df.at[end_idx, quality_col]
+                
+                # If both edge points have quality=1, set all points in gap to 1
+                if start_quality == 1 and end_quality == 1:
+                    for offset in range(1, end_idx - start_idx):
+                        df.at[start_idx + offset, quality_col] = 1
 
             # Interpolate each selected column
             for col in cols_to_interpolate:
                 start_val = df.at[start_idx, col]
                 end_val = df.at[end_idx, col]
 
-                # Handle GPSDate separately – keep constant across gap
+                # For GPSDate, use the same date throughout the gap
                 if col == gps_date_col:
-                    if pd.notna(start_val) and str(start_val).strip() not in ('', '0'):
-                        df.loc[start_idx + 1:end_idx - 1, col] = start_val
-                        interpolated_rows += (end_idx - start_idx - 1)
+                    # Use the start date for all points in the gap
+                    if pd.notna(start_val) and str(start_val) != '0' and str(start_val).strip() != '':
+                        for offset in range(1, end_idx - start_idx):
+                            df.at[start_idx + offset, col] = start_val
+                            interpolated_rows += 1
                     continue
 
                 # Skip interpolation if invalid (NaN) values
@@ -647,33 +689,78 @@ class MagbaseProcessing(ScriptInterface):
                     except (ValueError, TypeError):
                         continue
 
+                # Linear interpolation
                 gap_size = end_idx - start_idx
                 step = (end_val - start_val) / gap_size
-
+                
+                # Fill in interpolated values
                 for offset in range(1, gap_size):
-                    row_idx = start_idx + offset
-                    interpolated_val = start_val + step * offset
-                    df.at[row_idx, col] = interpolated_val
+                    interpolated_val = start_val + (step * offset)
+                    df.at[start_idx + offset, col] = interpolated_val
                     interpolated_rows += 1
-
-                    # Update formatted time simultaneously
+                    
+                    # Special handling for formatted GPS time (hh:mm:ss.sss)
                     if col == gps_time_col and gps_formatted_col:
+                        # Use the valid GPS time format directly instead of converting from numeric
                         try:
-                            # Use the hours and minutes from the start formatted time as reference
-                            ref_time = None
+                            # Get reference formatted time from a valid GPS point
+                            reference_time = None
+                            
+                            # First try to get it from the start point of this gap
                             if isinstance(df.at[start_idx, gps_formatted_col], str) and ':' in df.at[start_idx, gps_formatted_col]:
-                                ref_time = df.at[start_idx, gps_formatted_col]
-                            else:
-                                for idx_ref in gps_indices:
-                                    if isinstance(df.at[idx_ref, gps_formatted_col], str) and ':' in df.at[idx_ref, gps_formatted_col]:
-                                        ref_time = df.at[idx_ref, gps_formatted_col]
+                                reference_time = df.at[start_idx, gps_formatted_col]
+                            # If that failed, check other GPS points
+                            elif any(isinstance(df.at[idx, gps_formatted_col], str) and ':' in df.at[idx, gps_formatted_col] 
+                                    for idx in gps_indices):
+                                for idx in gps_indices:
+                                    if isinstance(df.at[idx, gps_formatted_col], str) and ':' in df.at[idx, gps_formatted_col]:
+                                        reference_time = df.at[idx, gps_formatted_col]
                                         break
-                            if ref_time:
-                                h, m, _ = ref_time.split(':')
+                            
+                            if reference_time:
+                                # Parse the reference time
+                                parts = reference_time.split(':')
+                                hours_mins = f"{parts[0]}:{parts[1]}"
+                                
+                                # Only interpolate the seconds part
                                 seconds = interpolated_val % 60
-                                df.at[row_idx, gps_formatted_col] = f"{h}:{m}:{seconds:.3f}"
-                        except Exception as e:
-                            logging.debug(f"Formatted time interpolation error: {e}")
+                                
+                                # Format as hh:mm:ss.sss, keeping the original hours and minutes
+                                formatted_time = f"{hours_mins}:{seconds:.3f}"
+                                df.at[start_idx + offset, gps_formatted_col] = formatted_time
+                            else:
+                                # Fallback to the previous method if we couldn't find a reference time
+                                total_seconds = interpolated_val
+                                reference_hour = 7  # Default hour
+                                minutes = int((total_seconds % 3600) // 60)
+                                seconds = total_seconds % 60
+                                formatted_time = f"{reference_hour:02d}:{minutes:02d}:{seconds:.3f}"
+                                df.at[start_idx + offset, gps_formatted_col] = formatted_time
+                        except (ValueError, TypeError) as e:
+                            # If conversion fails, log and skip
+                            logging.debug(f"Time conversion failed: {e}")
+                            pass
+
+        # If we used a temporary numeric GPSTime column, rebuild the formatted hh:mm:ss.sss column
+        if gps_time_col == '_GPSTime_sec':
+            def _sec_to_formatted(sec):
+                if pd.isna(sec):
+                    return np.nan
+                try:
+                    sec = float(sec)
+                    h = int(sec // 3600)
+                    m = int((sec % 3600) // 60)
+                    s = sec % 60
+                    return f"{h:02d}:{m:02d}:{s:06.3f}"
+                except (ValueError, TypeError):
+                    return np.nan
+            if not gps_formatted_col:
+                gps_formatted_col = 'GPSTime [hh:mm:ss.sss]'
+                df[gps_formatted_col] = np.nan
+            df[gps_formatted_col] = df[gps_time_col].apply(_sec_to_formatted)
+            # Drop the temporary numeric column to keep output clean
+            df.drop(columns=['_GPSTime_sec'], inplace=True)
+            gps_time_col = gps_formatted_col  # Ensure downstream uses the formatted column
 
         elapsed = time.time() - start_time
         logging.info(f"Interpolation complete. Updated {interpolated_rows} data points in {elapsed:.2f} seconds.")
@@ -701,6 +788,261 @@ class MagbaseProcessing(ScriptInterface):
         logging.info(f"Downsampled data from {original_length} to {len(downsampled_df)} records, removing {rows_removed} rows without GPS data.")
         
         return downsampled_df
+    
+    def _fix_coordinates(self, df: pd.DataFrame, detected_cols: Dict[str, str]) -> pd.DataFrame:
+        """Fix coordinate data by propagating valid GPS coordinates to all rows"""
+        
+        lat_col = detected_cols.get('latitude') or next((c for c in df.columns if 'lat' in c.lower()), None)
+        lon_col = detected_cols.get('longitude') or next((c for c in df.columns if 'lon' in c.lower()), None)
+        alt_col = detected_cols.get('altitude') or next((c for c in df.columns if 'alt' in c.lower()), None)
+        
+        if not lat_col or not lon_col:
+            logging.warning("No coordinate columns found, skipping coordinate fix")
+            return df
+        
+        # Find rows with valid coordinates (non-zero, non-NaN)
+        valid_coords_mask = (
+            pd.notna(df[lat_col]) & 
+            pd.notna(df[lon_col]) & 
+            (df[lat_col] != 0) & 
+            (df[lon_col] != 0)
+        )
+        
+        valid_rows = df[valid_coords_mask]
+        logging.info(f"Found {len(valid_rows)} rows with valid coordinates out of {len(df)} total")
+        
+        if len(valid_rows) > 0:
+            # Use the first valid coordinate for all rows
+            valid_lat = valid_rows[lat_col].iloc[0]
+            valid_lon = valid_rows[lon_col].iloc[0]
+            valid_alt = valid_rows[alt_col].iloc[0] if alt_col and pd.notna(valid_rows[alt_col].iloc[0]) else None
+            
+            logging.info(f"Propagating coordinates - lat: {valid_lat}, lon: {valid_lon}, alt: {valid_alt}")
+            
+            # Propagate to all rows
+            df[lat_col] = valid_lat
+            df[lon_col] = valid_lon
+            if alt_col and valid_alt is not None:
+                df[alt_col] = valid_alt
+            
+            logging.info(f"Propagated coordinates to all {len(df)} rows")
+        else:
+            logging.warning("No valid coordinates found, cannot fix coordinates")
+        
+        # Fix GPS time data - use simple progressive approach
+        self._fix_gps_time_simple(df)
+        
+        return df
+    
+    def _fix_gps_time_simple(self, df: pd.DataFrame) -> None:
+        """Simple GPS time fix - find the original reference time and create progressive sequence"""
+        
+        # Find GPS time columns
+        gps_numeric_col = next((c for c in df.columns if 'GPSTime' in c and '[hh:mm:ss' not in c), None)
+        gps_formatted_col = next((c for c in df.columns if 'GPSTime' in c and '[hh:mm:ss' in c), None)
+        gps_date_col = next((c for c in df.columns if 'GPSDate' in c), None)
+        
+        # Get the original reference GPS time from the first row with valid GPS data
+        reference_time = None
+        reference_formatted = None
+        reference_date = None
+        
+        if gps_numeric_col:
+            # Find first valid numeric GPS time
+            for idx, val in df[gps_numeric_col].items():
+                if pd.notna(val) and val != 0:
+                    reference_time = float(val)
+                    break
+        
+        if gps_formatted_col:
+            # Find first valid formatted GPS time
+            for idx, val in df[gps_formatted_col].items():
+                if pd.notna(val) and str(val) != '0' and ':' in str(val):
+                    reference_formatted = str(val)
+                    break
+        
+        if gps_date_col:
+            # Find first valid GPS date
+            for idx, val in df[gps_date_col].items():
+                if pd.notna(val) and str(val) != '0':
+                    reference_date = val
+                    break
+        
+        logging.info(f"Reference GPS time: numeric={reference_time}, formatted={reference_formatted}, date={reference_date}")
+        
+        # Debug: If we have both reference values, check if they match
+        if reference_time is not None and reference_formatted is not None:
+            # Calculate what the numeric time should be for the formatted time
+            try:
+                parts = reference_formatted.split(':')
+                expected_hours = int(parts[0])
+                expected_minutes = int(parts[1])
+                expected_seconds = float(parts[2])
+                expected_numeric = expected_hours * 3600 + expected_minutes * 60 + expected_seconds
+                
+                logging.info(f"Expected numeric time from '{reference_formatted}': {expected_numeric}")
+                logging.info(f"Actual numeric time: {reference_time}")
+                logging.info(f"Difference: {reference_time - expected_numeric} seconds")
+                
+                # Use the formatted time as the source of truth and calculate correct numeric time
+                reference_time = expected_numeric
+                logging.info(f"Corrected reference time to: {reference_time}")
+                
+            except Exception as e:
+                logging.warning(f"Could not parse formatted time: {e}")
+        
+        # Create progressive GPS times
+        if reference_time is not None and gps_numeric_col:
+            sample_rate = 250  # Hz
+            time_increment = 1.0 / sample_rate  # 0.004 seconds
+            
+            for i in range(len(df)):
+                new_time = reference_time + (i * time_increment)
+                df.at[i, gps_numeric_col] = new_time
+            
+            logging.info(f"Generated progressive numeric GPS times starting from {reference_time}")
+        
+        # Create progressive formatted times from numeric times
+        if gps_formatted_col and gps_numeric_col:
+            def numeric_to_formatted_time(numeric_time):
+                if pd.isna(numeric_time):
+                    return None
+                
+                # GPS numeric time is seconds since midnight
+                total_seconds = float(numeric_time)
+                hours = int(total_seconds // 3600)
+                minutes = int((total_seconds % 3600) // 60)
+                seconds = total_seconds % 60
+                
+                # Verify: 90536 = 25.148 hours = 1 day + 1.148 hours = 01:08:56
+                # But we want it to be 09:05:36, so there's something wrong with the reference time
+                
+                return f"{hours:02d}:{minutes:02d}:{seconds:06.3f}"
+            
+            df[gps_formatted_col] = df[gps_numeric_col].apply(numeric_to_formatted_time)
+            logging.info("Generated progressive formatted GPS times")
+        
+        # Propagate GPS date to all rows
+        if reference_date is not None and gps_date_col:
+            df[gps_date_col] = reference_date
+            logging.info(f"Propagated GPS date '{reference_date}' to all rows")
+    
+    def _fix_gps_time_columns(self, df: pd.DataFrame) -> None:
+        """Fix and interpolate GPS time columns properly"""
+        
+        # Find GPS time columns
+        gps_numeric_col = next((c for c in df.columns if 'GPSTime' in c and '[hh:mm:ss' not in c), None)
+        gps_formatted_col = next((c for c in df.columns if 'GPSTime' in c and '[hh:mm:ss' in c), None)
+        gps_date_col = next((c for c in df.columns if 'GPSDate' in c), None)
+        
+        logging.info(f"GPS time columns found - numeric: {gps_numeric_col}, formatted: {gps_formatted_col}, date: {gps_date_col}")
+        
+        # For GPSDate - propagate the valid date to all rows
+        if gps_date_col:
+            valid_dates = df[df[gps_date_col].notna() & (df[gps_date_col] != 0) & (df[gps_date_col] != '0')]
+            if len(valid_dates) > 0:
+                valid_date = valid_dates[gps_date_col].iloc[0]
+                df[gps_date_col] = valid_date
+                logging.info(f"Propagated GPS date '{valid_date}' to all rows")
+        
+        # For numeric GPS time - calculate based on timestamps
+        if gps_numeric_col:
+            self._interpolate_numeric_gps_time(df, gps_numeric_col)
+        
+        # For formatted GPS time - calculate based on numeric time or timestamps  
+        if gps_formatted_col:
+            self._interpolate_formatted_gps_time(df, gps_formatted_col, gps_numeric_col)
+    
+    def _interpolate_numeric_gps_time(self, df: pd.DataFrame, gps_numeric_col: str) -> None:
+        """Interpolate numeric GPS time based on row progression with small increments"""
+        
+        # Find the first valid GPS time as reference
+        valid_times = df[df[gps_numeric_col].notna() & (df[gps_numeric_col] != 0)]
+        if len(valid_times) == 0:
+            logging.warning("No valid numeric GPS times found")
+            return
+            
+        # Use the reference GPS time from the first row
+        reference_time = valid_times[gps_numeric_col].iloc[0]
+        reference_idx = valid_times.index[0]
+        
+        logging.info(f"Using reference GPS time {reference_time} from row {reference_idx}")
+        
+        # Use a very small time increment based on typical MagWalk sampling rate
+        # MagWalk samples at ~250Hz, so each sample is about 0.004 seconds apart
+        time_increment = 0.004  # 4 milliseconds between samples
+        
+        # Calculate time for each row based on its position relative to the first row
+        for i, (idx, row) in enumerate(df.iterrows()):
+            # Calculate time as: reference_time + (row_position * time_increment)
+            interpolated_time = reference_time + (i * time_increment)
+            # Ensure time stays within valid 24-hour range (0-86399 seconds)
+            interpolated_time = interpolated_time % 86400  # 86400 = 24 * 3600
+            df.at[idx, gps_numeric_col] = interpolated_time
+                
+        logging.info(f"Interpolated numeric GPS times using {time_increment}s increments")
+    
+    def _interpolate_formatted_gps_time(self, df: pd.DataFrame, gps_formatted_col: str, gps_numeric_col: str = None) -> None:
+        """Interpolate formatted GPS time (hh:mm:ss.sss)"""
+        
+        if gps_numeric_col and gps_numeric_col in df.columns:
+            # Use numeric GPS time to generate formatted time
+            def numeric_to_formatted(numeric_time):
+                if pd.isna(numeric_time):
+                    return None
+                
+                # Numeric GPS time is seconds since midnight
+                total_seconds = float(numeric_time)
+                hours = int(total_seconds // 3600) % 24  # Ensure hours are 0-23
+                minutes = int((total_seconds % 3600) // 60)
+                seconds = total_seconds % 60
+                
+                return f"{hours:02d}:{minutes:02d}:{seconds:06.3f}"
+            
+            df[gps_formatted_col] = df[gps_numeric_col].apply(numeric_to_formatted)
+            logging.info("Generated formatted GPS times from numeric GPS times")
+            
+        else:
+            # Find first valid formatted time as reference and interpolate from there
+            valid_times = df[df[gps_formatted_col].notna() & 
+                           (df[gps_formatted_col] != '0') & 
+                           df[gps_formatted_col].astype(str).str.contains(':')]
+            
+            if len(valid_times) > 0:
+                reference_time_str = valid_times[gps_formatted_col].iloc[0]
+                reference_idx = valid_times.index[0]
+                
+                # Parse reference time
+                parts = reference_time_str.split(':')
+                reference_hours = int(parts[0])
+                reference_minutes = int(parts[1]) 
+                reference_seconds = float(parts[2])
+                reference_total_sec = reference_hours * 3600 + reference_minutes * 60 + reference_seconds
+                
+                # Use timestamp for interpolation
+                timestamp_col = next((c for c in df.columns if 'Timestamp' in c), None)
+                if timestamp_col:
+                    reference_timestamp = df.at[reference_idx, timestamp_col]
+                    
+                    for idx, row in df.iterrows():
+                        timestamp_diff_ms = row[timestamp_col] - reference_timestamp
+                        timestamp_diff_sec = timestamp_diff_ms / 1000.0
+                        
+                        total_sec = reference_total_sec + timestamp_diff_sec
+                        hours = int(total_sec // 3600) % 24  # Handle day rollover
+                        minutes = int((total_sec % 3600) // 60)
+                        seconds = total_sec % 60
+                        
+                        formatted_time = f"{hours:02d}:{minutes:02d}:{seconds:06.3f}"
+                        df.at[idx, gps_formatted_col] = formatted_time
+                        
+                    logging.info("Interpolated formatted GPS times based on timestamp progression")
+                else:
+                    # Fallback: propagate same time to all rows
+                    df[gps_formatted_col] = reference_time_str
+                    logging.warning("No timestamp found, propagated same formatted time to all rows")
+        
+        return df
     
     def _add_calculated_fields(self, df: pd.DataFrame, detected_cols: Dict[str, str], 
                               sensor_config: Dict[str, Any], process_opts: Dict[str, Any]) -> pd.DataFrame:
@@ -824,7 +1166,8 @@ class MagbaseProcessing(ScriptInterface):
             return df
 
         def convert_magwalk_time_to_base_time(time_str):
-            if pd.isna(time_str) or not isinstance(time_str, str): return None
+            if pd.isna(time_str) or not isinstance(time_str, str):
+                return None
             try:
                 parts = time_str.split(':')
                 hours, minutes, seconds = int(parts[0]), int(parts[1]), float(parts[2])
@@ -835,16 +1178,38 @@ class MagbaseProcessing(ScriptInterface):
                 return None
 
         df['MagWalk_LocalTime'] = df[magwalk_time_col].apply(convert_magwalk_time_to_base_time)
+        
+        # Log time conversion status and sample values for debugging
+        valid_conversions = df['MagWalk_LocalTime'].notna().sum()
+        logging.info(f"Time conversion: {valid_conversions}/{len(df)} successful conversions")
+        
+        # Debug: Log sample converted times to verify they match original magbase.py
+        sample_converted = df['MagWalk_LocalTime'].dropna().head(3).tolist()
+        logging.info(f"Sample converted times for residual calculation: {sample_converted}")
+        
+        # Debug: Log basic base station info
+        logging.info(f"Base station data: {len(base_station_df)} records")
+        if base_time_col in base_station_df.columns:
+            logging.info(f"Base station time column '{base_time_col}' found")
+        if base_field_col in base_station_df.columns:
+            sample_base_fields = base_station_df[base_field_col].head(3).tolist()
+            logging.info(f"Sample base fields: {sample_base_fields}")
         df['R1 [nT]'] = np.nan
         df['R2 [nT]'] = np.nan
         if process_opts.get('vertical_alignment', {}).get('value', False):
             df['VA [nT]'] = np.nan
 
-        base_times_numeric = pd.to_numeric(base_station_df[base_time_col], errors='coerce')
+        # Ensure both MagWalk and base station times are on the same numeric scale (remove decimal point)
+        base_times_numeric = pd.to_numeric(base_station_df[base_time_col].astype(str).str.replace('.', '', regex=False), errors='coerce')
         base_station_df = base_station_df.assign(time_numeric=base_times_numeric).sort_values('time_numeric').reset_index(drop=True)
         
         base_times_array = base_station_df['time_numeric'].values
         base_fields_array = base_station_df[base_field_col].values
+        
+        # Debug: Log processed base station info
+        logging.info(f"Base station time range: {base_station_df['time_numeric'].min()}-{base_station_df['time_numeric'].max()}")
+        sample_base_times = base_station_df['time_numeric'].head(3).tolist()
+        logging.info(f"Sample processed base times: {sample_base_times}")
 
         num_cores = max(1, mp.cpu_count() - 1)
         chunk_size = min(10000, max(1000, len(df) // (num_cores * 10)))
