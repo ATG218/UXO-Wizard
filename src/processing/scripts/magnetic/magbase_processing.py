@@ -16,6 +16,7 @@ from pathlib import Path
 import pyproj
 from datetime import datetime
 import logging
+import time
 import multiprocessing as mp
 from functools import partial
 
@@ -367,6 +368,9 @@ class MagbaseProcessing(ScriptInterface):
             'altitude': ['alt', 'altitude', 'height'],
             'btotal1': ['btotal1', 'r1', 'magnetic1'],
             'btotal2': ['btotal2', 'r2', 'magnetic2'],
+            # Specific GPS time columns
+            'gps_numeric_time': ['gpstime', 'gpstime (s)', 'time'], # e.g., 90536.004
+            'gps_formatted_time': ['gpstime [hh:mm:ss.sss]'], # e.g., 09:05:36.004
             # Support both naming conventions
             'bx1': ['bx1', 'bx_1', 'b1x [nt]', 'b1x'],
             'by1': ['by1', 'by_1', 'b1y [nt]', 'b1y'], 
@@ -530,112 +534,154 @@ class MagbaseProcessing(ScriptInterface):
         return filtered_df
     
     def _interpolate_gps_gaps(self, df: pd.DataFrame, detected_cols: Dict[str, str]) -> pd.DataFrame:
-        """Interpolate GPS gaps in MagWalk data following original magbase.py logic"""
-        lat_col = detected_cols.get('latitude')
-        lon_col = detected_cols.get('longitude')
-        alt_col = detected_cols.get('altitude')
-        
-        if not lat_col or not lon_col:
-            logging.warning("Cannot interpolate GPS gaps - latitude/longitude columns not found")
+        """Interpolate GPS gaps in MagWalk data (logic ported from original magbase.py)"""
+        start_time = time.time()
+        logging.info("Starting GPS data interpolation...")
+
+        if df.empty:
+            logging.warning("Empty dataframe provided, skipping interpolation.")
             return df
-        
-        # Find GPS time columns for interpolation
-        gps_time_col = None
-        gps_formatted_col = None
-        gps_date_col = None
-        
-        for col in df.columns:
-            if 'GPSTime' in col and '[hh:mm:ss' in col:
-                gps_formatted_col = col
-            elif 'GPSTime' in col and col != gps_formatted_col:
-                gps_time_col = col
-            elif 'GPSDate' in col:
-                gps_date_col = col
-        
-        # Find valid GPS indices (points with actual GPS data)
-        gps_indices = []
-        for idx, row in df.iterrows():
-            lat_val = row[lat_col]
-            lon_val = row[lon_col]
-            if pd.notna(lat_val) and pd.notna(lon_val) and lat_val != 0 and lon_val != 0:
-                gps_indices.append(idx)
-        
-        if len(gps_indices) < 2:
-            logging.warning("Insufficient GPS points for interpolation")
+
+        # Work on a copy to avoid modifying original dataframe in place
+        df = df.copy()
+
+        # Clean up unnamed or empty columns
+        df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+        df = df.loc[:, ~df.columns.isna()]
+
+        # Identify GPS-related columns
+        gps_time_col = next((c for c in df.columns if 'GPSTime' in c and '[hh:mm:ss' not in c), None)
+        gps_date_col = next((c for c in df.columns if 'GPSDate' in c), None)
+        gps_formatted_col = next((c for c in df.columns if 'GPSTime' in c and '[hh:mm:ss' in c), None)
+        quality_col = next((c for c in df.columns if 'Quality' in c), None)
+
+        # If no numeric GPSTime column, but formatted exists, create a temporary numeric column
+        if not gps_time_col and gps_formatted_col:
+            def _time_to_sec(t):
+                if pd.isna(t) or not isinstance(t, str) or ':' not in t:
+                    return np.nan
+                try:
+                    h, m, s = t.split(':')
+                    return float(h) * 3600 + float(m) * 60 + float(s)
+                except ValueError:
+                    return np.nan
+            df['_GPSTime_sec'] = df[gps_formatted_col].apply(_time_to_sec)
+            gps_time_col = '_GPSTime_sec'
+            logging.info("Created temporary numeric GPSTime column from formatted time for interpolation.")
+
+        if not gps_time_col:
+            logging.warning("No GPSTime column (numeric or formatted) found. Cannot perform interpolation.")
             return df
-        
-        logging.info(f"Found {len(gps_indices)} valid GPS points for interpolation")
-        
-        # Columns to interpolate
-        cols_to_interpolate = [lat_col, lon_col]
-        if alt_col:
-            cols_to_interpolate.append(alt_col)
-        if gps_time_col:
-            cols_to_interpolate.append(gps_time_col)
-        if gps_date_col:
+
+        # Identify other columns to interpolate (accelerometer, position, altitude)
+        acc_x_col = next((c for c in df.columns if 'AccX' in c), None)
+        acc_y_col = next((c for c in df.columns if 'AccY' in c), None)
+        acc_z_col = next((c for c in df.columns if 'AccZ' in c), None)
+        lat_col = detected_cols.get('latitude') or next((c for c in df.columns if 'lat' in c.lower()), None)
+        lon_col = detected_cols.get('longitude') or next((c for c in df.columns if 'lon' in c.lower()), None)
+        alt_col = detected_cols.get('altitude') or next((c for c in df.columns if 'alt' in c.lower()), None)
+
+        cols_to_interpolate = []
+        for name, col in [('AccX', acc_x_col), ('AccY', acc_y_col), ('AccZ', acc_z_col),
+                          ('Latitude', lat_col), ('Longitude', lon_col), ('Altitude', alt_col),
+                          ('GPSTime', gps_time_col)]:
+            if col is not None:
+                cols_to_interpolate.append(col)
+            else:
+                logging.debug(f"{name} column not found for interpolation")
+
+        if gps_formatted_col and gps_formatted_col not in cols_to_interpolate:
+            cols_to_interpolate.append(gps_formatted_col)
+        if gps_date_col and gps_date_col not in cols_to_interpolate:
             cols_to_interpolate.append(gps_date_col)
-        
-        # Perform interpolation between pairs of GPS points
+
+        logging.info(f"Columns to interpolate: {cols_to_interpolate}")
+
+        # Indices of rows with valid GPS time values
+        gps_indices = [idx for idx, val in enumerate(df[gps_time_col])
+                        if pd.notna(val) and str(val).strip() not in ('', '0')]
+
+        if len(gps_indices) < 2:
+            logging.warning("Not enough GPS points found for interpolation.")
+            return df
+
+        logging.info(f"Found {len(gps_indices)} GPS-marked datapoints.")
+
         interpolated_rows = 0
+        # Iterate over each gap between GPS points
         for i in range(len(gps_indices) - 1):
-            start_idx = gps_indices[i]
-            end_idx = gps_indices[i+1]
-            
-            # Skip if there's no gap to fill
+            start_idx, end_idx = gps_indices[i], gps_indices[i + 1]
             if end_idx - start_idx <= 1:
                 continue
-            
-            # Interpolate between GPS points for each column
+
+            # Propagate quality flag if both edge points are good
+            if quality_col:
+                if df.at[start_idx, quality_col] == 1 and df.at[end_idx, quality_col] == 1:
+                    df.loc[start_idx + 1:end_idx - 1, quality_col] = 1
+
+            # Interpolate each selected column
             for col in cols_to_interpolate:
                 start_val = df.at[start_idx, col]
                 end_val = df.at[end_idx, col]
-                
-                # For GPSDate, use the same date throughout the gap
+
+                # Handle GPSDate separately – keep constant across gap
                 if col == gps_date_col:
-                    if pd.notna(start_val) and str(start_val) != '0' and str(start_val).strip() != '':
-                        for offset in range(1, end_idx - start_idx):
-                            df.at[start_idx + offset, col] = start_val
-                            interpolated_rows += 1
+                    if pd.notna(start_val) and str(start_val).strip() not in ('', '0'):
+                        df.loc[start_idx + 1:end_idx - 1, col] = start_val
+                        interpolated_rows += (end_idx - start_idx - 1)
                     continue
-                
-                # Skip if values are missing
+
+                # Skip interpolation if invalid (NaN) values
                 if pd.isna(start_val) or pd.isna(end_val):
                     continue
-                
-                # Handle GPS time formatting
-                if col == gps_time_col:
+
+                # Treat 0\u00b0 lat/lon/alt as invalid only if both edges are 0 to avoid propagating Null Island
+                if col in {lat_col, lon_col, alt_col} and start_val == 0 and end_val == 0:
+                    continue
+
+                # Convert GPSTime values to float for numeric interpolation
+                if 'GPSTime' in col:
                     try:
                         start_val = float(start_val) if not isinstance(start_val, (int, float)) else start_val
                         end_val = float(end_val) if not isinstance(end_val, (int, float)) else end_val
-                        
-                        if pd.isna(start_val) or pd.isna(end_val):
-                            continue
                     except (ValueError, TypeError):
                         continue
-                
-                # Linear interpolation
+
                 gap_size = end_idx - start_idx
                 step = (end_val - start_val) / gap_size
-                
-                # Fill in interpolated values
+
                 for offset in range(1, gap_size):
-                    interpolated_val = start_val + (step * offset)
-                    df.at[start_idx + offset, col] = interpolated_val
+                    row_idx = start_idx + offset
+                    interpolated_val = start_val + step * offset
+                    df.at[row_idx, col] = interpolated_val
                     interpolated_rows += 1
 
-                    # Also update the formatted time string if it exists
+                    # Update formatted time simultaneously
                     if col == gps_time_col and gps_formatted_col:
                         try:
-                            total_seconds = interpolated_val
-                            hours = int(total_seconds // 3600) % 24
-                            minutes = int((total_seconds % 3600) // 60)
-                            seconds = total_seconds % 60
-                            df.at[start_idx + offset, gps_formatted_col] = f"{hours:02d}:{minutes:02d}:{seconds:06.3f}"
-                        except (ValueError, TypeError):
-                            pass # Ignore if conversion fails
-        
-        logging.info(f"GPS gap interpolation completed: {interpolated_rows} values interpolated")
+                            # Use the hours and minutes from the start formatted time as reference
+                            ref_time = None
+                            if isinstance(df.at[start_idx, gps_formatted_col], str) and ':' in df.at[start_idx, gps_formatted_col]:
+                                ref_time = df.at[start_idx, gps_formatted_col]
+                            else:
+                                for idx_ref in gps_indices:
+                                    if isinstance(df.at[idx_ref, gps_formatted_col], str) and ':' in df.at[idx_ref, gps_formatted_col]:
+                                        ref_time = df.at[idx_ref, gps_formatted_col]
+                                        break
+                            if ref_time:
+                                h, m, _ = ref_time.split(':')
+                                seconds = interpolated_val % 60
+                                df.at[row_idx, gps_formatted_col] = f"{h}:{m}:{seconds:.3f}"
+                        except Exception as e:
+                            logging.debug(f"Formatted time interpolation error: {e}")
+
+        elapsed = time.time() - start_time
+        logging.info(f"Interpolation complete. Updated {interpolated_rows} data points in {elapsed:.2f} seconds.")
+
+        # Final cleanup of any completely NaN columns
+        df = df.loc[:, ~df.columns.isna()]
         return df
+        
 
     def _downsample_to_gps_points(self, df: pd.DataFrame, detected_cols: Dict[str, str]) -> pd.DataFrame:
         """Downsample the data to only include points with valid GPS data."""
