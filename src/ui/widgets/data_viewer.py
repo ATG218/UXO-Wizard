@@ -19,7 +19,7 @@ import os
 
 # Import map layer types for integration
 try:
-    from .map.layer_types import UXOLayer, LayerType, GeometryType, LayerStyle, LayerSource
+    from ..map.layer_types import UXOLayer, LayerType, GeometryType, LayerStyle, LayerSource
     MAP_INTEGRATION_AVAILABLE = True
 except ImportError:
     logger.warning("Map integration not available - layer_types module not found")
@@ -703,7 +703,7 @@ class DataViewerTab(QWidget):
                 
             logger.debug("Importing ProcessingDialog...")
             # Import here to avoid circular imports
-            from .processing_dialog import ProcessingDialog
+            from .processing.processing_dialog import ProcessingDialog
             
             logger.debug("Creating processing dialog...")
             dialog = ProcessingDialog(df, self, input_file_path=self.current_file)

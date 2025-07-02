@@ -15,11 +15,11 @@ from qtpy.QtCore import Qt, QSettings, Signal, QTimer, QDir
 from qtpy.QtGui import QIcon, QKeySequence, QAction
 from loguru import logger
 
-from .project_explorer import ProjectExplorer
-from .console_widget import ConsoleWidget
-from .data_viewer import DataViewer
+from .widgets.project_explorer import ProjectExplorer
+from .widgets.console_widget import ConsoleWidget
+from .widgets.data_viewer import DataViewer
 from .themes import ThemeManager
-from .map_widget_advanced import MapWidgetAdvanced
+
 
 
 class MainWindow(QMainWindow):
@@ -181,65 +181,115 @@ class MainWindow(QMainWindow):
         
     def setup_docks(self):
         """Create dockable panels"""
-        # Project Explorer Dock
+        # Create the map widget first since other widgets depend on it
+        from .map.map_widget import UXOMapWidget
+        self.map_widget = UXOMapWidget()
+        
+        # Project Explorer Dock (far left)
         self.project_dock = QDockWidget("File Explorer", self)
         self.project_dock.setObjectName("ProjectExplorerDock")
         self.project_explorer = ProjectExplorer()
         self.project_dock.setWidget(self.project_explorer)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.project_dock)
         
-        # Console/Log Dock
+        # Layer Control Panel Dock (next to file explorer)
+        self.layers_dock = QDockWidget("Layers", self)
+        self.layers_dock.setObjectName("LayerControlDock")
+        from .map.layer_panel import LayerControlPanel
+        self.layers_panel = LayerControlPanel(self.map_widget.layer_manager)
+        self.layers_dock.setWidget(self.layers_panel)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.layers_dock)
+        
+        # Lab Widget Dock (will be tabified with layers)
+        self.lab_dock = QDockWidget("Lab", self)
+        self.lab_dock.setObjectName("LabDock")
+        from .widgets.lab_widget import LabWidget
+        self.lab_widget = LabWidget(self.project_root if hasattr(self, 'project_root') else None)
+        self.lab_dock.setWidget(self.lab_widget)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.lab_dock)
+        
+        # Console/Log Dock (right side)
         self.console_dock = QDockWidget("Console", self)
         self.console_dock.setObjectName("ConsoleDock")
         self.console_widget = ConsoleWidget()
         self.console_dock.setWidget(self.console_widget)
         self.addDockWidget(Qt.RightDockWidgetArea, self.console_dock)
 
-        # Advanced Map Dock
+        # Advanced Map Dock (right side, tabify with console)
         self.map_dock = QDockWidget("Advanced Map", self)
         self.map_dock.setObjectName("AdvancedMapDock")
-        self.map_widget = MapWidgetAdvanced()
         self.map_dock.setWidget(self.map_widget)
         self.addDockWidget(Qt.RightDockWidgetArea, self.map_dock)
         
-        # Tabify Console and Map together
-        self.tabifyDockWidget(self.console_dock, self.map_dock)
-        self.map_dock.raise_()
-        
-        # Data Viewer Dock - at bottom spanning full width
+        # Data Viewer Dock (bottom, spanning full width)
         self.data_dock = QDockWidget("Data Viewer", self)
         self.data_dock.setObjectName("DataViewerDock")
+        # Remove the dock title bar to reclaim vertical space
+        from qtpy.QtWidgets import QWidget as _QtEmptyWidget
+        self.data_dock.setTitleBarWidget(_QtEmptyWidget())
         self.data_viewer = DataViewer()
         self.data_dock.setWidget(self.data_viewer)
         self.data_dock.setMinimumHeight(200)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.data_dock)
         
+        # Configure the dock arrangement
+        # IMPORTANT: Tabify Lab with Layers (this creates proper tabs)
+        self.tabifyDockWidget(self.layers_dock, self.lab_dock)
+        self.layers_dock.raise_()  # Layers on top by default
+        
+        # Tabify Console and Map together (right side)
+        self.tabifyDockWidget(self.console_dock, self.map_dock)
+        self.map_dock.raise_()  # Map on top by default
+        
         # Configure corners and force layout after a brief delay
         QTimer.singleShot(50, self._setup_dock_layout)
         
     def _setup_dock_layout(self):
-        """Set up dock layout to ensure data dock spans full width"""
+        """Set up dock layout with proper proportions"""
         # Configure corners so bottom dock spans full width
         self.setCorner(Qt.BottomLeftCorner, Qt.BottomDockWidgetArea)
         self.setCorner(Qt.BottomRightCorner, Qt.BottomDockWidgetArea)
         
-        # Make sure the data dock is actually at the bottom
-        self.addDockWidget(Qt.BottomDockWidgetArea, self.data_dock)
+        # Set proportions for the dock arrangement
+        # Left side: File Explorer (narrow) + Layers/Lab (medium) 
+        # Right side: Map/Console (wide)
+        # Bottom: Data Viewer (spans full width)
         
-        # Set some reasonable proportions
-        self.resizeDocks([self.project_dock, self.console_dock], [180, 400], Qt.Horizontal)
+        # Separate the Project Explorer from the Layers/Lab pane with a horizontal split
+        self.splitDockWidget(self.project_dock, self.layers_dock, Qt.Horizontal)
+        
+        # Re-tabify Layers and Lab in case the split operation disturbed their tab relationship
+        self.tabifyDockWidget(self.layers_dock, self.lab_dock)
+        self.layers_dock.raise_()  # Ensure Layers tab is shown on top
+        
+        # Set horizontal proportions: File Explorer | Layers/Lab | Map/Console
+        self.resizeDocks([self.project_dock, self.layers_dock, self.console_dock], [180, 250, 450], Qt.Horizontal)
+        
+        # Set vertical proportion for bottom data viewer
         self.resizeDocks([self.data_dock], [200], Qt.Vertical)
         
         # Add dock toggles to View menu
         self.dock_menu.addAction(self.project_dock.toggleViewAction())
+        self.dock_menu.addAction(self.layers_dock.toggleViewAction())
+        self.dock_menu.addAction(self.lab_dock.toggleViewAction())
         self.dock_menu.addAction(self.console_dock.toggleViewAction())
-        self.dock_menu.addAction(self.data_dock.toggleViewAction())
         self.dock_menu.addAction(self.map_dock.toggleViewAction())
+        self.dock_menu.addAction(self.data_dock.toggleViewAction())
         
-        # Ensure File Explorer is visible and active by default
+        # Ensure all docks are visible and properly arranged
         self.project_dock.show()
         self.project_dock.raise_()
-        self.project_dock.activateWindow()
+        
+        # Make sure both layers and lab are visible (since they're tabified)
+        self.layers_dock.show()
+        self.lab_dock.show()
+        self.layers_dock.raise_()  # Layers tab active by default
+        
+        self.console_dock.show()
+        self.map_dock.show()
+        self.map_dock.raise_()  # Map tab active by default
+        
+        self.data_dock.show()
         
     def setup_statusbar(self):
         """Create the status bar"""
@@ -295,12 +345,23 @@ class MainWindow(QMainWindow):
         # Advanced map connections
         self.map_widget.coordinates_clicked.connect(self.on_map_coordinates_clicked)
         
+        # Layer panel connections
+        self.layers_panel.zoom_to_layer.connect(self.map_widget.zoom_to_layer)
+        
+        # Lab widget connections
+        self.lab_widget.file_selected.connect(self.open_file)
+        self.lab_widget.script_executed.connect(self.run_processing_script)
+        
     def on_project_changed(self, project_path):
         """Handle project path changes"""
         if project_path:
             # Project opened
             folder_name = project_path.split('/')[-1]
             self.setWindowTitle(f"UXO Wizard Desktop Suite - Advanced - {folder_name}")
+            
+            # Update lab widget to point to new project's processing folder
+            self.project_root = project_path
+            self.lab_widget.set_project_root(project_path)
         else:
             # Project closed
             self.setWindowTitle("UXO Wizard Desktop Suite - Advanced")
@@ -323,7 +384,7 @@ class MainWindow(QMainWindow):
                             coord_cols.append(col)
                     
                     if len(coord_cols) >= 2:
-                        # Add data as points layer
+                        # Add data as points layer - now using direct map widget
                         self.map_widget.add_data_layer("Survey Data", data, "points")
                         self.map_dock.raise_()  # Bring map to front
                         logger.info("Data plotted on map")
@@ -332,6 +393,32 @@ class MainWindow(QMainWindow):
                         
             except Exception as e:
                 logger.error(f"Error updating map with data: {str(e)}")
+    
+    def run_processing_script(self, script_path):
+        """Handle execution of processing scripts from Lab widget"""
+        try:
+            # For now, just open the script in a text viewer
+            # In the future, this could execute the script or open it in a code editor
+            filename = script_path.split('/')[-1]
+            
+            # Check if already open in tabs
+            for i in range(self.central_tabs.count()):
+                if self.central_tabs.tabText(i) == filename:
+                    self.central_tabs.setCurrentIndex(i)
+                    return
+            
+            # Create text viewer for the script
+            widget = self.create_text_viewer(script_path)
+            self.central_tabs.addTab(widget, filename)
+            self.central_tabs.setCurrentIndex(self.central_tabs.count() - 1)
+            
+            # Update status
+            self.status_label.setText(f"Opened script: {filename}")
+            logger.info(f"Processing script opened: {script_path}")
+            
+        except Exception as e:
+            logger.error(f"Error opening script {script_path}: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to open script:\n{str(e)}")
         
     def new_project(self):
         """Create a new project"""
