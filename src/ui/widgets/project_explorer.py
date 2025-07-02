@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QMenu, QFileSystemModel, QHeaderView,
     QStackedWidget, QLabel, QPushButton
 )
-from PySide6.QtCore import Qt, Signal, QDir, QModelIndex
+from PySide6.QtCore import Qt, Signal, QDir, QModelIndex, QSettings
 from PySide6.QtGui import QIcon, QAction, QFont
 from loguru import logger
 
@@ -99,7 +99,11 @@ class ProjectExplorer(QWidget):
     def __init__(self):
         super().__init__()
         self.current_project_path = None
+        self.settings = QSettings("UXO-Wizard", "Desktop-Suite")
         self.setup_ui()
+        
+        # Restore last project after UI is set up
+        self.restore_last_project()
         
     def setup_ui(self):
         """Initialize the UI"""
@@ -218,6 +222,8 @@ class ProjectExplorer(QWidget):
     def close_project(self):
         """Close the current project and return to welcome screen"""
         self.show_welcome()
+        # Clear saved project path
+        self.settings.remove("last_project_path")
         logger.info("Project closed")
         
     def set_root_path(self, path):
@@ -228,6 +234,9 @@ class ProjectExplorer(QWidget):
             self.tree_view.setRootIndex(index)
             self.show_tree_view()  # Switch to tree view when project is opened
             self.project_changed.emit(path)
+            
+            # Save project path to settings
+            self.settings.setValue("last_project_path", path)
             logger.info(f"Project explorer root set to: {path}")
         else:
             logger.warning(f"Invalid path: {path}")
@@ -329,4 +338,18 @@ class ProjectExplorer(QWidget):
     
     def go_home(self):
         """Navigate to the home directory"""
-        self.set_root_path(QDir.homePath()) 
+        self.set_root_path(QDir.homePath())
+        
+    def restore_last_project(self):
+        """Restore the last opened project from settings"""
+        last_project_path = self.settings.value("last_project_path")
+        
+        if last_project_path and QDir(last_project_path).exists():
+            logger.info(f"Restoring last project: {last_project_path}")
+            self.set_root_path(last_project_path)
+        else:
+            if last_project_path:
+                logger.warning(f"Last project path no longer exists: {last_project_path}")
+                # Clean up invalid path from settings
+                self.settings.remove("last_project_path")
+            self.show_welcome() 
