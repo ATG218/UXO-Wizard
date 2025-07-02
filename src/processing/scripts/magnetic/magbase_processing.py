@@ -558,7 +558,7 @@ class MagbaseProcessing(ScriptInterface):
         df = df.loc[:, ~df.columns.isna()]
 
         # Identify GPS-related columns
-        gps_time_col = next((c for c in df.columns if 'GPSTime' in c and '[hh:mm:ss' not in c), None)
+        gps_time_col = next((c for c in df.columns if 'GPSTime' in c and not '[hh:mm:ss' in c), None)
         gps_date_col = next((c for c in df.columns if 'GPSDate' in c), None)
         gps_formatted_col = next((c for c in df.columns if 'GPSTime' in c and '[hh:mm:ss' in c), None)
         quality_col = next((c for c in df.columns if 'Quality' in c), None)
@@ -660,7 +660,7 @@ class MagbaseProcessing(ScriptInterface):
                 if pd.isna(start_val) or pd.isna(end_val):
                     continue
 
-                # Treat 0\u00b0 lat/lon/alt as invalid only if both edges are 0 to avoid propagating Null Island
+                # Treat 0° lat/lon/alt as invalid only if both edges are 0 to avoid propagating Null Island
                 if col in {lat_col, lon_col, alt_col} and start_val == 0 and end_val == 0:
                     continue
 
