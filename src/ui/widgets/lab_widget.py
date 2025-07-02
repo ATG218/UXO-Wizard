@@ -9,7 +9,7 @@ from pathlib import Path
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeView, QLabel, QPushButton,
     QFileSystemModel, QMenu, QMessageBox, QToolButton, QFrame, QSplitter,
-    QTextEdit, QTabWidget
+    QTextEdit, QTabWidget, QStackedWidget
 )
 from qtpy.QtCore import Qt, QDir, QFileInfo, Signal, QModelIndex, QTimer
 from qtpy.QtGui import QFont, QIcon, QDesktopServices
@@ -26,16 +26,17 @@ class LabWidget(QWidget):
     def __init__(self, project_root: str = None):
         super().__init__()
         self.project_root = project_root or os.getcwd()
-        self.processing_path = os.path.join(self.project_root, "src", "processing")
+        self.processed_path = os.path.join(self.project_root, "processed")
+        self.has_processed_folder = False
         
         self.setup_ui()
-        self.setup_file_model()
+        self.check_processed_folder()
         self.apply_styling()
         
-        # Auto-refresh timer
+        # Auto-refresh timer to check for processed folder
         self.refresh_timer = QTimer()
-        self.refresh_timer.timeout.connect(self.refresh_view)
-        self.refresh_timer.start(5000)  # Refresh every 5 seconds
+        self.refresh_timer.timeout.connect(self.check_processed_folder)
+        self.refresh_timer.start(3000)  # Check every 3 seconds
         
     def setup_ui(self):
         """Initialize the UI"""
@@ -49,9 +50,18 @@ class LabWidget(QWidget):
         # Toolbar
         self.create_toolbar(layout)
         
-        # Main content area
-        self.create_content_area(layout)
+        # Stacked widget to switch between placeholder and content
+        self.stacked_widget = QStackedWidget()
         
+        # Placeholder widget (shown when no processed folder)
+        self.placeholder_widget = self.create_placeholder_widget()
+        self.stacked_widget.addWidget(self.placeholder_widget)
+        
+        # Main content area (shown when processed folder exists)
+        self.content_widget = self.create_content_area()
+        self.stacked_widget.addWidget(self.content_widget)
+        
+        layout.addWidget(self.stacked_widget)
         self.setLayout(layout)
         
     def create_header(self, layout):
@@ -72,7 +82,7 @@ class LabWidget(QWidget):
         header_layout.addStretch()
         
         # Processing folder indicator
-        self.path_label = QLabel("Processing Folder")
+        self.path_label = QLabel("Waiting for processed data...")
         self.path_label.setFont(QFont("", 8))
         header_layout.addWidget(self.path_label)
         
@@ -87,24 +97,26 @@ class LabWidget(QWidget):
         toolbar_layout.setSpacing(2)
         
         # Refresh button
-        self.refresh_btn = self.create_toolbar_button("🔄", "Refresh")
-        self.refresh_btn.clicked.connect(self.refresh_view)
+        self.refresh_btn = self.create_toolbar_button("⟳", "Refresh")
+        self.refresh_btn.clicked.connect(self.check_processed_folder)
         toolbar_layout.addWidget(self.refresh_btn)
         
         # Open folder button
-        self.open_folder_btn = self.create_toolbar_button("📁", "Open in Folder")
-        self.open_folder_btn.clicked.connect(self.open_processing_folder)
+        self.open_folder_btn = self.create_toolbar_button("□", "Open in Folder")
+        self.open_folder_btn.clicked.connect(self.open_processed_folder)
+        self.open_folder_btn.setEnabled(False)  # Disabled until processed folder exists
         toolbar_layout.addWidget(self.open_folder_btn)
         
         # Clear outputs button
-        self.clear_btn = self.create_toolbar_button("🗑️", "Clear Outputs")
+        self.clear_btn = self.create_toolbar_button("×", "Clear Outputs")
         self.clear_btn.clicked.connect(self.clear_outputs)
+        self.clear_btn.setEnabled(False)  # Disabled until processed folder exists
         toolbar_layout.addWidget(self.clear_btn)
         
         toolbar_layout.addStretch()
         
         # Info label
-        self.info_label = QLabel("Ready")
+        self.info_label = QLabel("No processed data")
         self.info_label.setFont(QFont("", 8))
         toolbar_layout.addWidget(self.info_label)
         
@@ -115,11 +127,65 @@ class LabWidget(QWidget):
         btn = QToolButton()
         btn.setText(text)
         btn.setToolTip(tooltip)
-        btn.setFixedSize(24, 24)
+        btn.setFixedSize(32, 24)  # Wider to accommodate text
+        font = QFont()
+        font.setPointSize(8)
+        font.setBold(True)
+        btn.setFont(font)
         return btn
         
-    def create_content_area(self, layout):
-        """Create the main content area"""
+    def create_placeholder_widget(self) -> QWidget:
+        """Create the placeholder widget shown when no processed folder exists"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(20)
+        
+        # Icon/emoji
+        icon_label = QLabel("🔬")
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_font = QFont()
+        icon_font.setPointSize(48)
+        icon_label.setFont(icon_font)
+        layout.addWidget(icon_label)
+        
+        # Main message
+        message_label = QLabel("Please process files first to gain access to lab")
+        message_label.setAlignment(Qt.AlignCenter)
+        message_font = QFont()
+        message_font.setPointSize(12)
+        message_font.setBold(True)
+        message_label.setFont(message_font)
+        layout.addWidget(message_label)
+        
+        # Secondary message
+        help_label = QLabel("Process sensor data files to create outputs that will appear here")
+        help_label.setAlignment(Qt.AlignCenter)
+        help_font = QFont()
+        help_font.setPointSize(10)
+        help_label.setFont(help_font)
+        help_label.setStyleSheet("color: #888888;")
+        layout.addWidget(help_label)
+        
+        # Status
+        self.status_label = QLabel("Waiting for 'processed' folder...")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        status_font = QFont()
+        status_font.setPointSize(9)
+        status_font.setItalic(True)
+        self.status_label.setFont(status_font)
+        self.status_label.setStyleSheet("color: #666666;")
+        layout.addWidget(self.status_label)
+        
+        widget.setLayout(layout)
+        return widget
+        
+    def create_content_area(self) -> QWidget:
+        """Create the main content area (file browser)"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        
         # Split between file tree and preview
         splitter = QSplitter(Qt.Vertical)
         
@@ -139,30 +205,79 @@ class LabWidget(QWidget):
         
         # Preview/info panel
         self.info_panel = QTabWidget()
-        self.info_panel.setMaximumHeight(150)
+        self.info_panel.setMaximumHeight(120)  # Reduced height
+        self.info_panel.setMinimumHeight(120)   # Set minimum to keep it compact
         
         # File info tab
         self.file_info = QTextEdit()
         self.file_info.setReadOnly(True)
-        self.file_info.setMaximumHeight(120)
+        self.file_info.setMaximumHeight(100)
         self.info_panel.addTab(self.file_info, "File Info")
         
         # Recent activity tab  
         self.activity_log = QTextEdit()
         self.activity_log.setReadOnly(True)
-        self.activity_log.setMaximumHeight(120)
+        self.activity_log.setMaximumHeight(100)
         self.info_panel.addTab(self.activity_log, "Recent Activity")
         
         splitter.addWidget(self.info_panel)
-        splitter.setStretchFactor(0, 1)  # Tree takes most space
-        splitter.setStretchFactor(1, 0)  # Info panel is fixed
+        splitter.setStretchFactor(0, 3)  # Tree takes much more space
+        splitter.setStretchFactor(1, 1)  # Info panel takes less space
+        
+        # Set initial splitter sizes to push info panel to bottom
+        splitter.setSizes([300, 120])
         
         layout.addWidget(splitter)
+        widget.setLayout(layout)
+        return widget
+        
+    def check_processed_folder(self):
+        """Check if processed folder exists and switch views accordingly"""
+        processed_exists = os.path.exists(self.processed_path) and os.path.isdir(self.processed_path)
+        
+        if processed_exists and not self.has_processed_folder:
+            # Processed folder just appeared
+            self.has_processed_folder = True
+            self.setup_file_model()
+            self.stacked_widget.setCurrentWidget(self.content_widget)
+            self.path_label.setText(f"📁 {os.path.basename(self.processed_path)}")
+            self.info_label.setText("Ready")
+            
+            # Enable toolbar buttons
+            self.open_folder_btn.setEnabled(True)
+            self.clear_btn.setEnabled(True)
+            
+            self.log_activity("Lab activated - processed folder found!")
+            logger.info(f"Lab widget activated: {self.processed_path}")
+            
+        elif not processed_exists and self.has_processed_folder:
+            # Processed folder disappeared
+            self.has_processed_folder = False
+            self.stacked_widget.setCurrentWidget(self.placeholder_widget)
+            self.path_label.setText("Waiting for processed data...")
+            self.info_label.setText("No processed data")
+            
+            # Disable toolbar buttons
+            self.open_folder_btn.setEnabled(False)
+            self.clear_btn.setEnabled(False)
+            
+            logger.info("Lab widget deactivated - processed folder not found")
+            
+        elif processed_exists and self.has_processed_folder:
+            # Refresh the view if already active
+            self.refresh_view()
+            
+        # Update status in placeholder
+        if not processed_exists:
+            self.status_label.setText(f"Looking for: {self.processed_path}")
         
     def setup_file_model(self):
         """Setup the file system model"""
+        if not os.path.exists(self.processed_path):
+            return
+            
         self.file_model = QFileSystemModel()
-        self.file_model.setRootPath(self.processing_path)
+        self.file_model.setRootPath(self.processed_path)
         
         # Set up filters to show relevant files
         self.file_model.setNameFilters([
@@ -173,7 +288,7 @@ class LabWidget(QWidget):
         
         # Apply model to tree view
         self.tree_view.setModel(self.file_model)
-        self.tree_view.setRootIndex(self.file_model.index(self.processing_path))
+        self.tree_view.setRootIndex(self.file_model.index(self.processed_path))
         
         # Configure columns
         self.tree_view.setColumnWidth(0, 200)  # Name
@@ -182,9 +297,9 @@ class LabWidget(QWidget):
         self.tree_view.setColumnWidth(3, 120)  # Date Modified
         
         # Update path label
-        self.path_label.setText(f"📁 {os.path.basename(self.processing_path)}")
+        self.path_label.setText(f"📁 {os.path.basename(self.processed_path)}")
         
-        logger.info(f"Lab widget initialized for: {self.processing_path}")
+        logger.info(f"Lab widget initialized for: {self.processed_path}")
         
     def on_file_click(self, index: QModelIndex):
         """Handle file selection"""
@@ -332,8 +447,8 @@ class LabWidget(QWidget):
         
         # Count files
         total_files = 0
-        if os.path.exists(self.processing_path):
-            for root, dirs, files in os.walk(self.processing_path):
+        if os.path.exists(self.processed_path):
+            for root, dirs, files in os.walk(self.processed_path):
                 total_files += len(files)
                 
         self.info_label.setText(f"{total_files} files")
@@ -342,16 +457,22 @@ class LabWidget(QWidget):
         """Handle directory loading completion"""
         self.info_label.setText("Ready")
         
-    def open_processing_folder(self):
-        """Open processing folder in system file manager"""
+    def open_processed_folder(self):
+        """Open processed folder in system file manager"""
         try:
-            QDesktopServices.openUrl(f"file://{self.processing_path}")
-            self.log_activity("Opened processing folder")
+            if os.path.exists(self.processed_path):
+                QDesktopServices.openUrl(f"file://{self.processed_path}")
+                self.log_activity("Opened processed folder")
+            else:
+                QMessageBox.information(self, "Info", "Processed folder does not exist yet.")
         except Exception as e:
             logger.error(f"Failed to open folder: {e}")
             
     def clear_outputs(self):
         """Clear processing outputs (with confirmation)"""
+        if not self.has_processed_folder:
+            return
+            
         reply = QMessageBox.question(
             self,
             "Clear Outputs",
@@ -366,7 +487,7 @@ class LabWidget(QWidget):
                 output_patterns = ['*.png', '*.jpg', '*.tiff', '*.csv', '*.txt', '*.dat']
                 cleared_count = 0
                 
-                for root, dirs, files in os.walk(self.processing_path):
+                for root, dirs, files in os.walk(self.processed_path):
                     for file in files:
                         for pattern in output_patterns:
                             if file.endswith(pattern.replace('*', '')):
@@ -387,6 +508,7 @@ class LabWidget(QWidget):
     def log_activity(self, message: str):
         """Log activity to the activity tab"""
         from datetime import datetime
+        from qtpy.QtGui import QTextCursor
         timestamp = datetime.now().strftime("%H:%M:%S")
         activity_text = f"[{timestamp}] {message}\n"
         
@@ -403,19 +525,31 @@ class LabWidget(QWidget):
         
         # Scroll to bottom
         cursor = self.activity_log.textCursor()
-        cursor.movePosition(cursor.End)
+        cursor.movePosition(QTextCursor.End)
         self.activity_log.setTextCursor(cursor)
         
     def set_project_root(self, project_root: str):
         """Update the project root path"""
         self.project_root = project_root
-        self.processing_path = os.path.join(project_root, "src", "processing")
+        self.processed_path = os.path.join(project_root, "processed")
+        self.has_processed_folder = False
         
-        if os.path.exists(self.processing_path):
-            self.setup_file_model()
+        # Reset to placeholder view and check for processed folder
+        self.stacked_widget.setCurrentWidget(self.placeholder_widget)
+        self.path_label.setText("Waiting for processed data...")
+        self.info_label.setText("No processed data")
+        
+        # Disable toolbar buttons
+        self.open_folder_btn.setEnabled(False)
+        self.clear_btn.setEnabled(False)
+        
+        # Check if processed folder exists in new project
+        self.check_processed_folder()
+        
+        if self.has_processed_folder:
             self.log_activity(f"Switched to project: {os.path.basename(project_root)}")
         else:
-            logger.warning(f"Processing path does not exist: {self.processing_path}")
+            logger.info(f"Switched to project: {os.path.basename(project_root)} (no processed folder yet)")
             
     def apply_styling(self):
         """Apply dark theme styling"""

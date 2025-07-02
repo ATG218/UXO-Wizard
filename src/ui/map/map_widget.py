@@ -58,7 +58,7 @@ class UXOMapWidget(QWidget):
         # Navigation controls
         self.center_btn = QToolButton()
         self.center_btn.setText("🎯")
-        self.center_btn.setToolTip("Center on Default Location (Norway)")
+        self.center_btn.setToolTip("Center on Default Location (Tarva Island)")
         self.center_btn.clicked.connect(self.center_default)
         toolbar.addWidget(self.center_btn)
         
@@ -126,12 +126,12 @@ class UXOMapWidget(QWidget):
         self.escape_shortcut.activated.connect(self.exit_fullscreen)
         
     def setup_map(self):
-        """Initialize the pyqtlet2 map with Norwegian defaults"""
-        logger.info("Setting up pyqtlet2 map with Norwegian defaults")
+        """Initialize the pyqtlet2 map with Tarva island as default center"""
+        logger.info("Setting up pyqtlet2 map centered on Tarva island")
 
-        # Create map centered on Norway
+        # Create map centered on Tarva island (63°43'N, 9°22'E)
         self.map = L.map(self.map_widget)
-        self.map.setView([64.5, 11.0], 3)  # Center of Norway, zoom 3 (less zoomed in)
+        self.map.setView([63.8167, 9.3667], 12)  # Tarva island coordinates, zoom 12 for detailed view
         
         # Add map layers
         self._add_base_layers()
@@ -409,9 +409,9 @@ class UXOMapWidget(QWidget):
             self._on_layer_added(layer)
             
     def center_default(self):
-        """Center map on default location (Norway)"""
-        self.map.setView([64.5, 11.0], 3)
-        logger.info("Map centered on Norway")
+        """Center map on default location (Tarva island)"""
+        self.map.setView([63.8167, 9.3667], 12)
+        logger.info("Map centered on Tarva island")
         
     def zoom_to_data(self):
         """Zoom to the extent of all data layers"""
