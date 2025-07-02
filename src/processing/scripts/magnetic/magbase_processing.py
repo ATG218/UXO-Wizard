@@ -51,34 +51,20 @@ def _find_closest_time_index(target_time, times):
         return pos - 1
 
 def _process_batch_mp(batch_df, base_times, base_fields, vertical_alignment=False, disable_basestation=False):
-    """Process a batch of rows to find closest base station measurements"""
+    """Process a batch of rows to find closest base station measurements - exactly like original magbase.py"""
     result_df = batch_df.copy()
-    debug_count = 0
     for idx, row in batch_df.iterrows():
         try:
-            local_time_str = row.get('MagWalk_LocalTime')
-            if pd.isna(local_time_str):
+            local_time_numeric = row.get('MagWalk_LocalTime')
+            if pd.isna(local_time_numeric):
                 continue
                 
-            local_time_numeric = float(local_time_str)
+            local_time_numeric = float(local_time_numeric)
             closest_idx = _find_closest_time_index(local_time_numeric, base_times)
             if closest_idx is not None:
                 if not disable_basestation:
                     # Calculate residuals exactly like original magbase.py
                     earth_field = base_fields[closest_idx]
-                    
-                    # Debug first few calculations
-                    if debug_count < 3:
-                        print(f"DEBUG R1/R2 calc #{debug_count}: idx={idx}")
-                        print(f"  Local time: {local_time_str} -> {local_time_numeric}")
-                        print(f"  Closest base idx: {closest_idx}, base time: {base_times[closest_idx]}")
-                        print(f"  Earth field: {earth_field}")
-                        print(f"  Btotal1: {row['Btotal1 [nT]']}, Btotal2: {row['Btotal2 [nT]']}")
-                        r1_calc = row['Btotal1 [nT]'] - earth_field
-                        r2_calc = row['Btotal2 [nT]'] - earth_field
-                        print(f"  R1 = {row['Btotal1 [nT]']} - {earth_field} = {r1_calc}")
-                        print(f"  R2 = {row['Btotal2 [nT]']} - {earth_field} = {r2_calc}")
-                        debug_count += 1
                     
                     result_df.at[idx, 'R1 [nT]'] = row['Btotal1 [nT]'] - earth_field
                     result_df.at[idx, 'R2 [nT]'] = row['Btotal2 [nT]'] - earth_field
@@ -91,7 +77,7 @@ def _process_batch_mp(batch_df, base_times, base_fields, vertical_alignment=Fals
                     # without creating redundant R1 and R2 columns
                     result_df.at[idx, 'VA [nT]'] = row['Btotal1 [nT]'] - row['Btotal2 [nT]']
         except (ValueError, TypeError) as e:
-            logging.debug(f"Error matching time {local_time_str}: {e}")
+            logging.debug(f"Error matching time {local_time_numeric}: {e}")
     return result_df
 
 
@@ -345,9 +331,6 @@ class MagbaseProcessing(ScriptInterface):
             if output_opts.get('include_diagnostics', {}).get('value', True):
                 result.metadata['diagnostics'] = self._generate_diagnostics(magwalk_df, detected_cols)
             
-            # Generate layer output for map visualization
-            if output_opts.get('generate_visualization_data', {}).get('value', True):
-                self._generate_layer_outputs(result, magwalk_df, detected_cols)
             
             # Generate output filename like original magbase.py with input file prefix
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1166,18 +1149,31 @@ class MagbaseProcessing(ScriptInterface):
             return df
 
         def convert_magwalk_time_to_base_time(time_str):
+            # Parse the magwalk time (UTC)
             if pd.isna(time_str) or not isinstance(time_str, str):
                 return None
+                
             try:
+                # Extract hours, minutes, seconds from time string (format: hh:mm:ss.sss)
                 parts = time_str.split(':')
-                hours, minutes, seconds = int(parts[0]), int(parts[1]), float(parts[2])
+                hours = int(parts[0])
+                minutes = int(parts[1])
+                seconds = float(parts[2])
+                
+                # Convert from UTC to UTC+2 by adding 2 hours
                 local_hours = (hours + 2) % 24
+                
+                # Format as a time string matching the base station format
+                # Base station times are in the format HHMMSS.S (e.g., 083954.0)
                 return f"{local_hours:02d}{minutes:02d}{seconds:.1f}".replace('.', '')
             except (ValueError, IndexError) as e:
                 logging.debug(f"Time conversion error: {e}")
                 return None
 
         df['MagWalk_LocalTime'] = df[magwalk_time_col].apply(convert_magwalk_time_to_base_time)
+        
+        # Convert MagWalk local times to numeric (matching base station format)
+        df['MagWalk_LocalTime'] = pd.to_numeric(df['MagWalk_LocalTime'], errors='coerce')
         
         # Log time conversion status and sample values for debugging
         valid_conversions = df['MagWalk_LocalTime'].notna().sum()
@@ -1199,9 +1195,11 @@ class MagbaseProcessing(ScriptInterface):
         if process_opts.get('vertical_alignment', {}).get('value', False):
             df['VA [nT]'] = np.nan
 
-        # Ensure both MagWalk and base station times are on the same numeric scale (remove decimal point)
-        base_times_numeric = pd.to_numeric(base_station_df[base_time_col].astype(str).str.replace('.', '', regex=False), errors='coerce')
-        base_station_df = base_station_df.assign(time_numeric=base_times_numeric).sort_values('time_numeric').reset_index(drop=True)
+        # Convert base station times to numeric and sort for binary search (exactly like original magbase.py)
+        base_times_numeric = pd.to_numeric(base_station_df[base_time_col], errors='coerce')
+        base_station_df = base_station_df.assign(time_numeric=base_times_numeric)
+        base_station_df = base_station_df.sort_values('time_numeric')
+        base_station_df = base_station_df.reset_index(drop=True)
         
         base_times_array = base_station_df['time_numeric'].values
         base_fields_array = base_station_df[base_field_col].values
@@ -1256,46 +1254,6 @@ class MagbaseProcessing(ScriptInterface):
                 }
         
         return diagnostics
-    
-    def _generate_layer_outputs(self, result: ProcessingResult, df: pd.DataFrame, detected_cols: Dict[str, str]):
-        """Generate layer outputs for map visualization"""
-        
-        # Survey track layer
-        if 'UTM_Easting' in df.columns and 'UTM_Northing' in df.columns:
-            result.add_layer_output(
-                layer_type="survey_track",
-                data=df[['UTM_Easting', 'UTM_Northing']],
-                style_info={
-                    'color': 'blue',
-                    'weight': 2,
-                    'opacity': 0.8
-                },
-                metadata={
-                    'layer_description': 'Magnetic survey flight path',
-                    'coordinate_system': 'UTM',
-                    'total_points': len(df),
-                    'detected_columns': detected_cols
-                }
-            )
-        
-        # Magnetic field data layer
-        if 'R1 [nT]' in df.columns:
-            result.add_layer_output(
-                layer_type="magnetic_field_data",
-                data=df[['UTM_Easting', 'UTM_Northing', 'R1 [nT]']],
-                style_info={
-                    'colormap': 'viridis',
-                    'opacity': 0.7,
-                    'point_size': 3
-                },
-                metadata={
-                    'layer_description': 'Magnetic field residuals (R1)',
-                    'field_range': [float(df['R1 [nT]'].min()), float(df['R1 [nT]'].max())],
-                    'units': 'nanoTesla',
-                    'detected_columns': detected_cols
-                }
-            )
-
 
 # Export the script class
 SCRIPT_CLASS = MagbaseProcessing
