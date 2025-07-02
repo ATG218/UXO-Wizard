@@ -18,7 +18,7 @@ import pandas as pd
 from typing import Dict, Any, Optional
 from loguru import logger
 
-from ..processing import ProcessingPipeline, ProcessingResult
+from ....processing import ProcessingPipeline, ProcessingResult
 
 
 class AnimatedProgressBar(QProgressBar):

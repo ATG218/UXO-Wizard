@@ -10,7 +10,7 @@ import pandas as pd
 from typing import Optional
 
 from .processing_widget import ProcessingWidget
-from ..processing import ProcessingResult
+from ....processing import ProcessingResult
 
 
 class ProcessingDialog(QDialog):

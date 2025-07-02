@@ -1,5 +1,5 @@
 """
-Advanced Map Widget for UXO Wizard - pyqtlet2 based implementation
+Main Map Widget for UXO Wizard - pyqtlet2 based implementation
 
 Features:
 - Real-time layer management without HTML reloads
@@ -29,8 +29,8 @@ from .layer_types import UXOLayer, LayerType, GeometryType, LayerStyle
 from .layer_manager import LayerManager
 
 
-class AdvancedMapWidget(QWidget):
-    """Advanced map widget with real-time layer management using pyqtlet2"""
+class UXOMapWidget(QWidget):
+    """Main map widget with real-time layer management using pyqtlet2"""
     
     # Signals
     coordinates_clicked = Signal(float, float)  # lat, lon
@@ -500,6 +500,109 @@ class AdvancedMapWidget(QWidget):
         if self.isFullScreen():
             self.fullscreen_btn.setChecked(False)
             self.toggle_fullscreen(False)
+    
+    def add_data_layer(self, name: str, data: pd.DataFrame, layer_type: str = "points"):
+        """Add a data layer to the map (compatibility method for main window)"""
+        logger.info(f"Adding data layer: {name} ({layer_type})")
+        
+        # Create UXOLayer from DataFrame
+        uxo_layer = self._create_uxo_layer_from_dataframe(name, data, layer_type)
+        
+        if uxo_layer:
+            self.add_layer_realtime(uxo_layer)
+        else:
+            logger.error(f"Failed to create layer from data: {name}")
+            
+    def _create_uxo_layer_from_dataframe(self, name: str, data: pd.DataFrame, layer_type: str):
+        """Create UXOLayer from DataFrame"""
+        from .layer_types import UXOLayer, LayerType, GeometryType, LayerStyle, LayerSource
+        
+        # Auto-detect coordinate columns
+        lat_col, lon_col = self._detect_coordinate_columns(data)
+        
+        if not lat_col or not lon_col:
+            logger.warning("No valid coordinate columns found in data")
+            return None
+            
+        # Calculate bounds
+        try:
+            lats = data[lat_col].dropna()
+            lons = data[lon_col].dropna()
+            
+            if len(lats) == 0 or len(lons) == 0:
+                logger.warning("No valid coordinates in data")
+                return None
+                
+            bounds = [
+                float(lons.min()), float(lats.min()),
+                float(lons.max()), float(lats.max())
+            ]
+        except Exception as e:
+            logger.error(f"Error calculating bounds: {e}")
+            bounds = None
+            
+        # Create metadata
+        metadata = {
+            "row_count": len(data),
+            "columns": data.columns.tolist(),
+            "lat_column": lat_col,
+            "lon_column": lon_col,
+            "data_type": layer_type
+        }
+        
+        # Create UXOLayer
+        uxo_layer = UXOLayer(
+            name=name,
+            layer_type=LayerType.POINTS if layer_type == "points" else LayerType.VECTOR,
+            data=data,
+            geometry_type=GeometryType.POINT if layer_type == "points" else GeometryType.MULTIPOINT,
+            style=LayerStyle(),
+            metadata=metadata,
+            source=LayerSource.DATA_VIEWER,
+            bounds=bounds
+        )
+        
+        return uxo_layer
+        
+    def remove_layer(self, name: str):
+        """Remove a layer from the map (compatibility method)"""
+        self.layer_manager.remove_layer(name)
+        
+    def center_on_data(self, bounds):
+        """Center map on data bounds (compatibility method)"""
+        if bounds and len(bounds) == 4:
+            sw = [bounds[1], bounds[0]]  # [lat, lon]
+            ne = [bounds[3], bounds[2]]  # [lat, lon]
+            self.map.fitBounds([sw, ne])
+            
+    def set_map_center(self, lat: float, lon: float, zoom: int = 6):
+        """Set map center to specific coordinates (compatibility method)"""
+        self.map.setView([lat, lon], zoom)
+        
+    def add_marker(self, lat: float, lon: float, popup_text: str = "", color: str = "blue"):
+        """Add a single marker to the map (compatibility method)"""
+        # Create a simple point layer for the marker
+        import pandas as pd
+        from .layer_types import UXOLayer, LayerType, GeometryType, LayerStyle, LayerSource
+        
+        df = pd.DataFrame({
+            'lat': [lat],
+            'lon': [lon],
+            'description': [popup_text]
+        })
+        
+        marker_layer = UXOLayer(
+            name=f"Marker at {lat:.4f}, {lon:.4f}",
+            layer_type=LayerType.ANNOTATION,
+            data=df,
+            geometry_type=GeometryType.POINT,
+            style=LayerStyle(point_color=color),
+            metadata={"marker": True, "popup": popup_text},
+            source=LayerSource.ANNOTATION,
+            bounds=[lon, lat, lon, lat]
+        )
+        
+        self.add_layer_realtime(marker_layer)
 
     def showEvent(self, event):
         super().showEvent(event)
