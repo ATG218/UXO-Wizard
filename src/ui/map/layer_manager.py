@@ -196,6 +196,26 @@ class LayerManager(QObject):
                 
         return [min_x, min_y, max_x, max_y] if has_bounds else None
         
+    def get_visible_bounds(self) -> Optional[List[float]]:
+        """Get bounds encompassing all VISIBLE layers"""
+        visible_layers = [layer for layer in self.layers.values() if layer.is_visible]
+        if not visible_layers:
+            return None
+
+        min_x, min_y = float('inf'), float('inf')
+        max_x, max_y = float('-inf'), float('-inf')
+
+        has_bounds = False
+        for layer in visible_layers:
+            if layer.bounds:
+                has_bounds = True
+                min_x = min(min_x, layer.bounds[0])
+                min_y = min(min_y, layer.bounds[1])
+                max_x = max(max_x, layer.bounds[2])
+                max_y = max(max_y, layer.bounds[3])
+
+        return [min_x, min_y, max_x, max_y] if has_bounds else None
+        
     def clear_all(self):
         """Remove all layers"""
         layer_names = list(self.layers.keys())

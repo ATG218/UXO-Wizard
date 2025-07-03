@@ -229,6 +229,7 @@ class UXOMapWidget(QWidget):
                     layer_name_js = json.dumps(layer.name)
                     self.map_widget.page.runJavaScript(f"showUxoLayer({layer_name_js});")
                     logger.info(f"Layer '{layer.name}' created and shown on map")
+                    self.zoom_to_visible_layers()
                 else:
                     logger.info(f"Layer '{layer.name}' created and stored (hidden)")
             else:
@@ -452,6 +453,7 @@ class UXOMapWidget(QWidget):
                     self._create_leaflet_layer(layer)
                     self.map_widget.page.runJavaScript(f"showUxoLayer({layer_name_js});")
                     logger.debug(f"Layer '{layer_name}' made visible")
+                    self.zoom_to_visible_layers()
             else:
                 self.map_widget.page.runJavaScript(f"hideUxoLayer({layer_name_js});")
                 logger.debug(f"Layer '{layer_name}' hidden from map")
@@ -751,3 +753,17 @@ class UXOMapWidget(QWidget):
         """
         self.map_widget.page.runJavaScript(js_init_script)
         logger.info("JavaScript layer manager initialized.")
+
+    def zoom_to_visible_layers(self):
+        """Zoom to the extent of all currently visible data layers."""
+        bounds = self.layer_manager.get_visible_bounds()
+        if bounds:
+            # Convert to Leaflet bounds format: [[south, west], [north, east]]
+            sw = [bounds[1], bounds[0]]
+            ne = [bounds[3], bounds[2]]
+            # Use runJavaScript for robustness, bypassing the pyqtlet2 wrapper
+            js_command = f"{self.map.jsName}.fitBounds([[{sw[0]}, {sw[1]}], [{ne[0]}, {ne[1]}]]);"
+            self.map_widget.page.runJavaScript(js_command)
+            logger.info(f"Zoomed to visible data extent: {bounds}")
+        else:
+            logger.info("No visible layers with bounds to zoom to.")
