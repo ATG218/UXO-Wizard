@@ -347,6 +347,7 @@ class MainWindow(QMainWindow):
         
         # Layer panel connections
         self.layers_panel.zoom_to_layer.connect(self.map_widget.zoom_to_layer)
+        self.layers_panel.opacity_changed.connect(self.map_widget.layer_manager.set_layer_opacity)
         
         # Lab widget connections
         self.lab_widget.file_selected.connect(self.open_file)

@@ -201,6 +201,7 @@ class UXOMapWidget(QWidget):
         self.layer_manager.layer_removed.connect(self._on_layer_removed)
         self.layer_manager.layer_visibility_changed.connect(self._on_layer_visibility_changed)
         self.layer_manager.layer_style_changed.connect(self._on_layer_style_changed)
+        self.layer_manager.layer_opacity_changed.connect(self._on_layer_opacity_changed)
         
     def add_layer_realtime(self, uxo_layer: UXOLayer):
         """Add layer without HTML reload"""
@@ -406,6 +407,15 @@ class UXOMapWidget(QWidget):
         layer = self.layer_manager.get_layer(layer_name)
         if layer:
             self._on_layer_removed(layer_name)
+            self._on_layer_added(layer)
+            
+    def _on_layer_opacity_changed(self, layer_name: str, new_opacity: float):
+        """Handle layer opacity change"""
+        # For now, recreate the layer with new opacity
+        layer = self.layer_manager.get_layer(layer_name)
+        if layer:
+            self._on_layer_removed(layer_name)
+            layer.style.point_opacity = new_opacity
             self._on_layer_added(layer)
             
     def center_default(self):

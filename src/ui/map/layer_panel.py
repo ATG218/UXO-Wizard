@@ -1,158 +1,179 @@
 """
-Professional Layer Control Panel - QGIS-style layer management UI
+Modern Layer Control Panel - Clean, simple, and functional design
 """
 
 import os
 os.environ["QT_API"] = "pyside6"
 
 from qtpy.QtWidgets import (
-    QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
-    QMenu, QSlider, QLabel, QHBoxLayout, QPushButton,
-    QCheckBox, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
-    QInputDialog, QFrame, QSpacerItem, QSizePolicy, QHeaderView
+    QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
+    QLabel, QPushButton, QSlider, QCheckBox, QFrame, QSizePolicy,
+    QInputDialog, QMenu, QSpacerItem, QToolButton, QGroupBox,
+    QScrollArea, QStackedWidget
 )
-from qtpy.QtCore import Qt, Signal, QMimeData, QByteArray, QRect, QSize
-from qtpy.QtGui import (
-    QAction, QPainter, QColor, QBrush, QPen, QFont, QLinearGradient, 
-    QIcon, QPixmap, QPalette, QFontMetrics
-)
-from typing import Dict, Optional
+from qtpy.QtCore import Qt, Signal, QSize, QTimer
+from qtpy.QtGui import QFont, QIcon, QPixmap, QPainter, QColor, QBrush
+from typing import Dict, Optional, List
 from loguru import logger
 
 from .layer_manager import LayerManager
 from .layer_types import UXOLayer, LayerStyle, LayerType
 
 
-class QGISStyleDelegate(QStyledItemDelegate):
-    """QGIS-style delegate for clean, professional layer items"""
+class LayerItemWidget(QWidget):
+    """Modern layer item widget with clean design"""
     
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    visibility_changed = Signal(str, bool)  # layer_name, visible
+    layer_selected = Signal(str)  # layer_name
+    layer_double_clicked = Signal(str)  # layer_name
+    
+    def __init__(self, layer: UXOLayer):
+        super().__init__()
+        self.layer = layer
+        self.setup_ui()
         
-    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
-        """Paint layer items with QGIS-style clean design"""
-        painter.setRenderHint(QPainter.Antialiasing)
+    def setup_ui(self):
+        """Create modern layer item UI"""
+        layout = QHBoxLayout()
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(8)
         
-        # Only custom paint column 0 (layer name). Let default paint handle checkbox column.
-        if index.column() != 0:
-            super().paint(painter, option, index)
-            return
-
-        # Get item data from column0
-        item_data = index.data(Qt.UserRole)
-        if not isinstance(item_data, dict):
-            super().paint(painter, option, index)
-            return
-
-        rect = option.rect
-        is_group = item_data.get('is_group', False)
+        # Visibility toggle icon (replaces both checkbox and type indicator)
+        self.visibility_icon = QPushButton()
+        self.visibility_icon.setFixedSize(8, 8)
+        self.visibility_icon.setFlat(True)
+        self.visibility_icon.clicked.connect(self._toggle_visibility)
+        self._update_visibility_icon()
+        layout.addWidget(self.visibility_icon)
         
-        if is_group:
-            self._paint_group_item(painter, option, index, item_data)
-        else:
-            self._paint_layer_item(painter, option, index, item_data)
-            
-    def _paint_group_item(self, painter: QPainter, option: QStyleOptionViewItem, index, item_data):
-        """Paint group header in dark theme style"""
-        rect = option.rect
-        
-        # Dark background for groups
-        if option.state & QStyle.State_Selected:
-            painter.fillRect(rect, QColor(13, 115, 119))  # #0d7377
-        else:
-            painter.fillRect(rect, QColor(60, 60, 60))  # #3c3c3c
-            
-        # Group text
-        painter.setPen(QColor(255, 255, 255))  # White text
-        font = QFont()
-        font.setBold(True)
-        font.setPointSize(9)
-        painter.setFont(font)
-        
-        text_rect = rect.adjusted(20, 0, -5, 0)
-        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, index.data(Qt.DisplayRole))
-        
-    def _paint_layer_item(self, painter: QPainter, option: QStyleOptionViewItem, index, item_data):
-        """Paint layer item in dark theme style"""
-        rect = option.rect
-        layer_type = item_data.get('layer_type', 'points')
-        is_visible = item_data.get('is_visible', True)
-        opacity = item_data.get('opacity', 1.0)
-        is_selected = option.state & QStyle.State_Selected
-        
-        # Dark background
-        if is_selected:
-            painter.fillRect(rect, QColor(13, 115, 119))  # #0d7377
-        elif not is_visible:
-            painter.fillRect(rect, QColor(50, 50, 50))  # Darker gray for hidden
-        else:
-            painter.fillRect(rect, QColor(43, 43, 43))  # #2b2b2b
-            
-        # Layer type indicator (small colored square)
-        indicator_size = 12
-        indicator_x = rect.left() + 25
-        indicator_y = rect.center().y() - indicator_size // 2
-        indicator_rect = QRect(indicator_x, indicator_y, indicator_size, indicator_size)
-        
-        type_color = self._get_layer_type_color(layer_type)
-        painter.fillRect(indicator_rect, type_color)
-        painter.setPen(QPen(type_color.lighter(120), 1))
-        painter.drawRect(indicator_rect)
+        # Layer name and info
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(2)
         
         # Layer name
-        text_color = QColor(255, 255, 255) if is_visible else QColor(150, 150, 150)
-        painter.setPen(text_color)
+        self.name_label = QLabel(self.layer.name)
+        name_font = QFont()
+        name_font.setPointSize(9)
+        name_font.setBold(True)
+        self.name_label.setFont(name_font)
+        info_layout.addWidget(self.name_label)
         
-        font = QFont()
-        font.setPointSize(9)
-        if is_selected:
-            font.setBold(True)
-        painter.setFont(font)
+        # Layer details
+        details = self._get_layer_details()
+        self.details_label = QLabel(details)
+        details_font = QFont()
+        details_font.setPointSize(8)
+        self.details_label.setFont(details_font)
+        self.details_label.setStyleSheet("color: #999999;")
+        info_layout.addWidget(self.details_label)
         
-        text_rect = QRect(indicator_x + indicator_size + 8, rect.top(), 
-                         rect.width() - (indicator_x + indicator_size + 30), rect.height())
-        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, index.data(Qt.DisplayRole))
+        layout.addLayout(info_layout)
+        layout.addStretch()
         
-        # Opacity indicator (if not 100%)
-        if opacity < 1.0:
-            self._draw_opacity_badge(painter, rect, opacity)
+        # Opacity indicator
+        if self.layer.opacity < 1.0:
+            opacity_label = QLabel(f"{int(self.layer.opacity * 100)}%")
+            opacity_label.setStyleSheet("color: #999999; font-size: 8px;")
+            layout.addWidget(opacity_label)
+        
+        self.setLayout(layout)
+        self.setMinimumHeight(40)
+        
+        # Click handling
+        self.mousePressEvent = self._on_click
+        self.mouseDoubleClickEvent = self._on_double_click
+        
+    def _update_visibility_icon(self):
+        """Update the visibility icon based on layer state"""
+        if self.layer.is_visible:
+            # Green indicator for visible layer
+            self.visibility_icon.setText("")
+            self.visibility_icon.setToolTip("Layer is visible - click to hide")
+            self.visibility_icon.setStyleSheet("""
+                QPushButton {
+                    background-color: #28a745;
+                    border: 1px solid #20a83a;
+                    border-radius: 4px;
+                    min-width: 6px;
+                    min-height: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #34ce57;
+                    border-color: #28a745;
+                }
+                QPushButton:pressed {
+                    background-color: #1e7e34;
+                }
+            """)
+        else:
+            # Red indicator for hidden layer
+            self.visibility_icon.setText("")
+            self.visibility_icon.setToolTip("Layer is hidden - click to show")
+            self.visibility_icon.setStyleSheet("""
+                QPushButton {
+                    background-color: #dc3545;
+                    border: 1px solid #c82333;
+                    border-radius: 4px;
+                    min-width: 6px;
+                    min-height: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #e85a67;
+                    border-color: #dc3545;
+                }
+                QPushButton:pressed {
+                    background-color: #bd2130;
+                }
+            """)
             
-    def _get_layer_type_color(self, layer_type: str) -> QColor:
-        """Get subtle color for layer type (QGIS-style)"""
+    def _toggle_visibility(self):
+        """Toggle layer visibility"""
+        new_visibility = not self.layer.is_visible
+        # Emit signal to let the layer manager handle the change
+        # This maintains the proper signal chain: widget -> layer panel -> layer manager -> map widget
+        self.visibility_changed.emit(self.layer.name, new_visibility)
+            
+    def _get_layer_color(self) -> QColor:
+        """Get color for layer type"""
         colors = {
-            'points': QColor(228, 26, 28),       # Red
-            'raster': QColor(55, 126, 184),      # Blue  
-            'vector': QColor(77, 175, 74),       # Green
-            'processed': QColor(152, 78, 163),   # Purple
-            'annotation': QColor(255, 127, 0),   # Orange
+            LayerType.POINTS: QColor(52, 152, 219),      # Blue
+            LayerType.RASTER: QColor(46, 204, 113),      # Green
+            LayerType.VECTOR: QColor(155, 89, 182),      # Purple
+            LayerType.PROCESSED: QColor(230, 126, 34),   # Orange
+            LayerType.ANNOTATION: QColor(231, 76, 60),   # Red
         }
-        return colors.get(layer_type, QColor(166, 166, 166))  # Gray default
+        return colors.get(self.layer.layer_type, QColor(149, 165, 166))
         
-    def _draw_opacity_badge(self, painter: QPainter, rect: QRect, opacity: float):
-        """Draw small opacity percentage badge"""
-        # Small badge in top right
-        badge_text = f"{int(opacity * 100)}%"
-        font = QFont()
-        font.setPointSize(7)
-        painter.setFont(font)
+    def _get_layer_details(self) -> str:
+        """Get layer details string"""
+        details = []
         
-        metrics = QFontMetrics(font)
-        text_width = metrics.horizontalAdvance(badge_text)
+        if hasattr(self.layer.metadata, 'row_count'):
+            details.append(f"{self.layer.metadata['row_count']} items")
+        elif isinstance(self.layer.metadata, dict) and 'row_count' in self.layer.metadata:
+            details.append(f"{self.layer.metadata['row_count']} items")
+            
+        details.append(self.layer.layer_type.value.title())
         
-        badge_x = rect.right() - text_width - 8
-        badge_y = rect.top() + 3
-        badge_rect = QRect(badge_x - 2, badge_y, text_width + 4, 12)
+        return " • ".join(details)
         
-        # Badge background
-        painter.fillRect(badge_rect, QColor(100, 100, 100, 180))
+    def _on_click(self, event):
+        """Handle single click"""
+        self.layer_selected.emit(self.layer.name)
         
-        # Badge text
-        painter.setPen(QColor(255, 255, 255))
-        painter.drawText(badge_rect, Qt.AlignCenter, badge_text)
+    def _on_double_click(self, event):
+        """Handle double click"""
+        self.layer_double_clicked.emit(self.layer.name)
+        
+    def update_opacity(self, opacity: float):
+        """Update opacity display"""
+        self.layer.opacity = opacity
+        # Trigger UI refresh
+        self.setup_ui()
 
 
-class LayerControlPanel(QWidget):
-    """Professional QGIS-style layer management panel"""
+class ModernLayerControlPanel(QWidget):
+    """Modern, clean layer management panel"""
     
     # Signals
     layer_selected = Signal(str)  # layer_name
@@ -164,152 +185,121 @@ class LayerControlPanel(QWidget):
     def __init__(self, layer_manager: LayerManager):
         super().__init__()
         self.layer_manager = layer_manager
-        self.layer_items: Dict[str, QTreeWidgetItem] = {}
-        self.group_items: Dict[str, QTreeWidgetItem] = {}
+        self.layer_widgets: Dict[str, LayerItemWidget] = {}
+        self.current_layer = None
         
         self.setup_ui()
         self.setup_styling()
         self.connect_signals()
         
     def setup_ui(self):
-        """Initialize the professional UI"""
+        """Initialize the modern UI"""
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
-        # Header
+        # Header with title and controls
         self._create_header(layout)
         
-        # Toolbar
-        self._create_toolbar(layout)
+        # Layer list
+        self._create_layer_list(layout)
         
-        # Tree widget
-        self._create_tree_widget(layout)
-        
-        # Opacity control
-        self._create_opacity_control(layout)
+        # Controls section
+        self._create_controls(layout)
         
         self.setLayout(layout)
-        self._initialize_groups()
         
     def _create_header(self, layout):
-        """Create clean header section"""
+        """Create modern header"""
         header = QFrame()
-        header.setFixedHeight(30)
+        header.setFixedHeight(40)
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(10, 5, 10, 5)
+        header_layout.setContentsMargins(12, 8, 12, 8)
         
         # Title
-        title_label = QLabel("Layers")
+        title = QLabel("Layers")
         title_font = QFont()
+        title_font.setPointSize(11)
         title_font.setBold(True)
-        title_font.setPointSize(10)
-        title_label.setFont(title_font)
-        header_layout.addWidget(title_label)
+        title.setFont(title_font)
+        header_layout.addWidget(title)
         
         header_layout.addStretch()
         
-        layout.addWidget(header)
-        
-    def _create_toolbar(self, layout):
-        """Create clean toolbar"""
-        toolbar = QFrame()
-        toolbar.setFixedHeight(35)
-        toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(5, 3, 5, 3)
-        toolbar_layout.setSpacing(2)
-        
-        # Add Group button
-        add_group_btn = self._create_toolbar_button("Add Group")
-        add_group_btn.clicked.connect(self.add_group)
-        toolbar_layout.addWidget(add_group_btn)
+        # Add button
+        self.add_btn = QToolButton()
+        self.add_btn.setText("+")
+        self.add_btn.setFixedSize(24, 24)
+        self.add_btn.setToolTip("Add Group")
+        self.add_btn.clicked.connect(self.add_group)
+        header_layout.addWidget(self.add_btn)
         
         # Remove button
-        remove_btn = self._create_toolbar_button("Remove")
-        remove_btn.clicked.connect(self.remove_selected)
-        toolbar_layout.addWidget(remove_btn)
+        self.remove_btn = QToolButton()
+        self.remove_btn.setText("−")
+        self.remove_btn.setFixedSize(24, 24)
+        self.remove_btn.setToolTip("Remove Selected Layer")
+        self.remove_btn.setEnabled(False)
+        self.remove_btn.clicked.connect(self.remove_selected)
+        header_layout.addWidget(self.remove_btn)
         
-        toolbar_layout.addStretch()
+        layout.addWidget(header)
         
-        layout.addWidget(toolbar)
+    def _create_layer_list(self, layout):
+        """Create scrollable layer list"""
+        # Scroll area for layers
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
-    def _create_toolbar_button(self, text: str) -> QPushButton:
-        """Create a clean toolbar button"""
-        btn = QPushButton(text)
-        btn.setFixedHeight(24)
-        btn.setFixedWidth(60)
-        return btn
+        # Container for layer widgets
+        self.layers_container = QWidget()
+        self.layers_layout = QVBoxLayout(self.layers_container)
+        self.layers_layout.setContentsMargins(0, 0, 0, 0)
+        self.layers_layout.setSpacing(1)
+        self.layers_layout.addStretch()  # Push items to top
         
-    def _create_tree_widget(self, layout):
-        """Create QGIS-style tree widget"""
-        self.tree_widget = QTreeWidget()
+        scroll.setWidget(self.layers_container)
+        layout.addWidget(scroll)
         
-        # Headers
-        self.tree_widget.setHeaderLabels(["Layer", "Vis"])
-        header = self.tree_widget.header()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.Fixed)
-        header.resizeSection(0, 160)
-        header.resizeSection(1, 20)
-        header.setDefaultSectionSize(20)
+    def _create_controls(self, layout):
+        """Create opacity and other controls"""
+        controls = QFrame()
+        controls.setFixedHeight(80)
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(12, 8, 12, 8)
+        controls_layout.setSpacing(8)
         
-        # Tree styling
-        self.tree_widget.setRootIsDecorated(True)
-        self.tree_widget.setItemDelegate(QGISStyleDelegate())
-        self.tree_widget.setAlternatingRowColors(False)
-        self.tree_widget.setIndentation(15)
-        self.tree_widget.setItemsExpandable(True)
+        # Opacity control
+        opacity_group = QGroupBox("Layer Opacity")
+        opacity_layout = QVBoxLayout(opacity_group)
+        opacity_layout.setContentsMargins(8, 8, 8, 8)
         
-        # Drag and drop
-        self.tree_widget.setDragDropMode(QTreeWidget.InternalMove)
-        self.tree_widget.setDefaultDropAction(Qt.MoveAction)
+        # Opacity slider with label
+        slider_layout = QHBoxLayout()
         
-        # Context menu
-        self.tree_widget.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.tree_widget.customContextMenuRequested.connect(self.show_context_menu)
-        
-        # Interactions
-        self.tree_widget.itemSelectionChanged.connect(self._on_selection_changed)
-        self.tree_widget.itemChanged.connect(self._on_item_changed)
-        self.tree_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
-        
-        layout.addWidget(self.tree_widget)
-        
-    def _create_opacity_control(self, layout):
-        """Create clean opacity control"""
-        opacity_frame = QFrame()
-        opacity_frame.setFixedHeight(50)
-        opacity_layout = QVBoxLayout(opacity_frame)
-        opacity_layout.setContentsMargins(10, 5, 10, 5)
-        
-        # Label row
-        label_row = QHBoxLayout()
-        opacity_label = QLabel("Layer opacity")
-        opacity_label.setFont(QFont("", 8))
-        label_row.addWidget(opacity_label)
-        
-        label_row.addStretch()
-        
-        self.opacity_value_label = QLabel("100%")
-        self.opacity_value_label.setFont(QFont("", 8))
-        label_row.addWidget(self.opacity_value_label)
-        
-        opacity_layout.addLayout(label_row)
-        
-        # Slider
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(0, 100)
         self.opacity_slider.setValue(100)
         self.opacity_slider.setEnabled(False)
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
-        opacity_layout.addWidget(self.opacity_slider)
+        slider_layout.addWidget(self.opacity_slider)
         
-        layout.addWidget(opacity_frame)
+        self.opacity_label = QLabel("100%")
+        self.opacity_label.setFixedWidth(30)
+        self.opacity_label.setAlignment(Qt.AlignRight)
+        slider_layout.addWidget(self.opacity_label)
+        
+        opacity_layout.addLayout(slider_layout)
+        controls_layout.addWidget(opacity_group)
+        
+        layout.addWidget(controls)
         
     def setup_styling(self):
-        """Apply dark theme styling to match the rest of the application"""
+        """Apply modern dark theme styling to match the application"""
         self.setStyleSheet("""
-            LayerControlPanel {
+            ModernLayerControlPanel {
                 background-color: #2b2b2b;
                 border: 1px solid #3c3c3c;
             }
@@ -317,75 +307,58 @@ class LayerControlPanel(QWidget):
             QFrame {
                 background-color: #2b2b2b;
                 border: none;
-                border-bottom: 1px solid #3c3c3c;
             }
             
             QLabel {
-                color: #ffffff;
+                color: #e0e0e0;
                 background: transparent;
             }
             
-            QPushButton {
+            QToolButton {
                 background-color: #3c3c3c;
-                color: #ffffff;
+                color: #e0e0e0;
                 border: 1px solid #4a4a4a;
-                border-radius: 3px;
-                padding: 2px 6px;
-                font-size: 11px;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 12px;
+                padding: 2px;
             }
             
-            QPushButton:hover {
+            QToolButton:hover {
                 background-color: #4a4a4a;
-                border: 1px solid #0d7377;
+                border-color: #0d7377;
             }
             
-            QPushButton:pressed {
+            QToolButton:pressed {
                 background-color: #0d7377;
             }
             
-            QTreeWidget {
-                background-color: #2b2b2b;
-                color: #ffffff;
+            QScrollArea {
+                background-color: #333333;
                 border: 1px solid #3c3c3c;
-                outline: none;
-                show-decoration-selected: 1;
-                selection-background-color: #0d7377;
+                border-radius: 4px;
             }
             
-            QTreeWidget::item {
-                height: 22px;
-                border: none;
-                padding: 1px;
+            QGroupBox {
+                font-weight: bold;
+                color: #e0e0e0;
+                border: 1px solid #4a4a4a;
+                border-radius: 4px;
+                margin-top: 8px;
+                padding-top: 4px;
+                background-color: #2b2b2b;
+            }
+            
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 4px 0 4px;
                 color: #ffffff;
-            }
-            
-            QTreeWidget::item:selected {
-                background-color: #0d7377;
-                border: none;
-            }
-            
-            QTreeWidget::item:hover {
-                background-color: #3c3c3c;
-            }
-            
-            QTreeWidget::branch:has-siblings:!adjoins-item {
-                border-image: none;
-                border: none;
-            }
-            
-            QTreeWidget::branch:has-siblings:adjoins-item {
-                border-image: none;
-                border: none;
-            }
-            
-            QTreeWidget::branch:!has-children:!has-siblings:adjoins-item {
-                border-image: none;
-                border: none;
             }
             
             QSlider::groove:horizontal {
                 height: 6px;
-                background-color: #3c3c3c;
+                background-color: #4a4a4a;
                 border-radius: 3px;
             }
             
@@ -406,25 +379,37 @@ class LayerControlPanel(QWidget):
                 background-color: #0d7377;
                 border-radius: 3px;
             }
-        """)
-        
-    def _initialize_groups(self):
-        """Create initial layer groups"""
-        for group_name in self.layer_manager.layer_groups.keys():
-            self._create_group_item(group_name)
             
-    def _create_group_item(self, group_name: str) -> QTreeWidgetItem:
-        """Create a group item in the tree"""
-        group_item = QTreeWidgetItem(self.tree_widget)
-        group_item.setText(0, group_name)
-        group_item.setFlags(group_item.flags() | Qt.ItemIsDropEnabled)
-        group_item.setExpanded(True)
-        
-        # Store group metadata
-        group_item.setData(0, Qt.UserRole, {'is_group': True, 'group_name': group_name})
-        
-        self.group_items[group_name] = group_item
-        return group_item
+            LayerItemWidget {
+                background-color: #404040;
+                border: 1px solid #4a4a4a;
+                border-radius: 4px;
+                margin: 1px;
+            }
+            
+            LayerItemWidget:hover {
+                background-color: #4a4a4a;
+                border-color: #0d7377;
+            }
+            
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                border-radius: 2px;
+                border: 1px solid #6a6a6a;
+                background-color: #333333;
+            }
+            
+            QCheckBox::indicator:checked {
+                background-color: #0d7377;
+                border-color: #0d7377;
+                image: url(data:image/svg+xml;charset=utf-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23fff' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m1 7 4 4 10-10'/%3e%3c/svg%3e);
+            }
+            
+            QCheckBox::indicator:hover {
+                border-color: #0d7377;
+            }
+        """)
         
     def connect_signals(self):
         """Connect layer manager signals"""
@@ -435,181 +420,133 @@ class LayerControlPanel(QWidget):
         
     def _on_layer_added(self, layer: UXOLayer):
         """Handle layer addition"""
-        # Find appropriate group
-        group_name = None
-        for group, layers in self.layer_manager.layer_groups.items():
-            if layer.name in layers:
-                group_name = group
-                break
-                
-        if not group_name:
-            group_name = "Data Layers"
+        if layer.name in self.layer_widgets:
+            return  # Already exists
             
-        # Get or create group item
-        if group_name not in self.group_items:
-            self._create_group_item(group_name)
-            
-        group_item = self.group_items[group_name]
+        # Create layer widget
+        layer_widget = LayerItemWidget(layer)
+        layer_widget.visibility_changed.connect(self._on_layer_visibility_toggled)
+        layer_widget.layer_selected.connect(self._on_layer_selected)
+        layer_widget.layer_double_clicked.connect(self.zoom_to_layer.emit)
         
-        # Create layer item
-        layer_item = QTreeWidgetItem(group_item)
-        layer_item.setText(0, layer.name)
-        layer_item.setText(1, "")
-        layer_item.setFlags(
-            layer_item.flags() | 
-            Qt.ItemIsUserCheckable | 
-            Qt.ItemIsDragEnabled |
-            Qt.ItemIsSelectable
+        # Add to layout (insert before stretch)
+        self.layers_layout.insertWidget(self.layers_layout.count() - 1, layer_widget)
+        self.layer_widgets[layer.name] = layer_widget
+        
+        # Context menu
+        layer_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        layer_widget.customContextMenuRequested.connect(
+            lambda pos, name=layer.name: self._show_context_menu(pos, name, layer_widget)
         )
-        layer_item.setCheckState(1, Qt.Checked if layer.is_visible else Qt.Unchecked)
         
-        # Store layer metadata
-        layer_item.setData(0, Qt.UserRole, {
-            'layer_name': layer.name,
-            'opacity': layer.opacity,
-            'layer_type': layer.layer_type.value,
-            'is_visible': layer.is_visible,
-            'source': layer.source.value,
-            'row_count': getattr(layer.metadata, 'row_count', 0)
-        })
-        
-        self.layer_items[layer.name] = layer_item
-        
-        # Expand group
-        group_item.setExpanded(True)
-        
-        logger.debug(f"Added layer '{layer.name}' to layer panel")
+        logger.debug(f"Added layer widget for '{layer.name}'")
         
     def _on_layer_removed(self, layer_name: str):
         """Handle layer removal"""
-        if layer_name in self.layer_items:
-            item = self.layer_items[layer_name]
-            parent = item.parent()
-            if parent:
-                parent.removeChild(item)
-            del self.layer_items[layer_name]
-            logger.debug(f"Removed layer '{layer_name}' from layer panel")
+        if layer_name in self.layer_widgets:
+            widget = self.layer_widgets[layer_name]
+            self.layers_layout.removeWidget(widget)
+            widget.deleteLater()
+            del self.layer_widgets[layer_name]
+            
+            # Clear selection if this was selected
+            if self.current_layer == layer_name:
+                self.current_layer = None
+                self.opacity_slider.setEnabled(False)
+                self.opacity_label.setText("--")
+                self.remove_btn.setEnabled(False)
+                
+            logger.debug(f"Removed layer widget for '{layer_name}'")
             
     def _on_visibility_changed(self, layer_name: str, is_visible: bool):
         """Handle external visibility change"""
-        if layer_name in self.layer_items:
-            item = self.layer_items[layer_name]
-            item.setCheckState(1, Qt.Checked if is_visible else Qt.Unchecked)
+        if layer_name in self.layer_widgets:
+            widget = self.layer_widgets[layer_name]
+            widget.layer.is_visible = is_visible
+            widget._update_visibility_icon()
             
-            # Update metadata
-            data = item.data(0, Qt.UserRole)
-            if data:
-                data['is_visible'] = is_visible
-                item.setData(0, Qt.UserRole, data)
+            # Update visual style for the whole widget
+            if is_visible:
+                widget.setStyleSheet("")
+            else:
+                widget.setStyleSheet("QWidget { color: #666666; }")
             
     def _on_style_changed(self, layer_name: str, style: LayerStyle):
         """Handle style change"""
-        if layer_name in self.layer_items:
-            item = self.layer_items[layer_name]
-            self.tree_widget.update(self.tree_widget.indexFromItem(item))
+        if layer_name in self.layer_widgets:
+            widget = self.layer_widgets[layer_name]
+            widget.setup_ui()  # Refresh the widget
         
-    def _on_selection_changed(self):
-        """Handle selection change in tree"""
-        items = self.tree_widget.selectedItems()
-        if items:
-            item = items[0]
-            data = item.data(0, Qt.UserRole)
-            if data and 'layer_name' in data:
-                layer_name = data['layer_name']
-                self.layer_selected.emit(layer_name)
-                
-                # Update opacity slider
-                layer = self.layer_manager.get_layer(layer_name)
-                if layer:
-                    self.opacity_slider.setEnabled(True)
-                    new_value = int(layer.opacity * 100)
-                    self.opacity_slider.setValue(new_value)
-                    self.opacity_value_label.setText(f"{new_value}%")
+    def _on_layer_visibility_toggled(self, layer_name: str, is_visible: bool):
+        """Handle layer visibility toggle from widget"""
+        self.layer_manager.set_layer_visibility(layer_name, is_visible)
+        self.visibility_changed.emit(layer_name, is_visible)
+        
+    def _on_layer_selected(self, layer_name: str):
+        """Handle layer selection"""
+        self.current_layer = layer_name
+        self.layer_selected.emit(layer_name)
+        self.remove_btn.setEnabled(True)
+        
+        # Update opacity slider
+        layer = self.layer_manager.get_layer(layer_name)
+        if layer:
+            self.opacity_slider.setEnabled(True)
+            opacity_value = int(layer.opacity * 100)
+            self.opacity_slider.setValue(opacity_value)
+            self.opacity_label.setText(f"{opacity_value}%")
+            
+        # Visual feedback
+        for name, widget in self.layer_widgets.items():
+            if name == layer_name:
+                widget.setStyleSheet("""
+                    LayerItemWidget {
+                        background-color: #1a4f52;
+                        border: 2px solid #0d7377;
+                    }
+                """)
             else:
-                self.opacity_slider.setEnabled(False)
-                self.opacity_value_label.setText("--")
-                
-    def _on_item_changed(self, item: QTreeWidgetItem, column: int):
-        """Handle item changes (checkbox state)"""
-        if column == 1:
-            data = item.data(0, Qt.UserRole)
-            if data and 'layer_name' in data:
-                layer_name = data['layer_name']
-                is_visible = item.checkState(1) == Qt.Checked
-                
-                # Update metadata
-                data['is_visible'] = is_visible
-                item.setData(0, Qt.UserRole, data)
-                
-                # Update layer manager
-                self.layer_manager.set_layer_visibility(layer_name, is_visible)
-                self.visibility_changed.emit(layer_name, is_visible)
-                
-    def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int):
-        """Handle double-click to zoom to layer"""
-        data = item.data(0, Qt.UserRole)
-        if data and 'layer_name' in data:
-            layer_name = data['layer_name']
-            self.zoom_to_layer.emit(layer_name)
+                widget.setStyleSheet("")
                 
     def _on_opacity_changed(self, value: int):
         """Handle opacity slider change"""
         opacity = value / 100.0
-        self.opacity_value_label.setText(f"{value}%")
+        self.opacity_label.setText(f"{value}%")
         
-        # Update selected layer
-        items = self.tree_widget.selectedItems()
-        if items:
-            item = items[0]
-            data = item.data(0, Qt.UserRole)
-            if data and 'layer_name' in data:
-                layer_name = data['layer_name']
-                layer = self.layer_manager.get_layer(layer_name)
-                if layer:
-                    layer.opacity = opacity
-                    data['opacity'] = opacity
-                    item.setData(0, Qt.UserRole, data)
-                    self.opacity_changed.emit(layer_name, opacity)
-                    
-                    # Force repaint
-                    self.tree_widget.update(self.tree_widget.indexFromItem(item))
-                    
-    def show_context_menu(self, position):
-        """Show context menu for layer items"""
-        item = self.tree_widget.itemAt(position)
-        if not item:
-            return
+        if self.current_layer:
+            # Update layer manager (this will emit the signal)
+            self.layer_manager.set_layer_opacity(self.current_layer, opacity)
             
-        data = item.data(0, Qt.UserRole)
-        if not data or 'layer_name' not in data:
-            return  # Not a layer item
-            
-        layer_name = data['layer_name']
-        
+            # Update widget display
+            if self.current_layer in self.layer_widgets:
+                self.layer_widgets[self.current_layer].update_opacity(opacity)
+                    
+            # Emit signal for map update
+            self.opacity_changed.emit(self.current_layer, opacity)
+                    
+    def _show_context_menu(self, position, layer_name: str, widget: LayerItemWidget):
+        """Show context menu for layer"""
         menu = QMenu(self)
         
         # Zoom to layer
-        zoom_action = QAction("Zoom to Layer", self)
+        zoom_action = menu.addAction("Zoom to Layer")
         zoom_action.triggered.connect(lambda: self.zoom_to_layer.emit(layer_name))
-        menu.addAction(zoom_action)
         
         # Properties
-        props_action = QAction("Properties...", self)
+        props_action = menu.addAction("Properties...")
         props_action.triggered.connect(lambda: self.style_edit_requested.emit(layer_name))
-        menu.addAction(props_action)
         
         menu.addSeparator()
         
         # Remove layer
-        remove_action = QAction("Remove Layer", self)
+        remove_action = menu.addAction("Remove Layer")
         remove_action.triggered.connect(lambda: self.layer_manager.remove_layer(layer_name))
-        menu.addAction(remove_action)
         
         # Show menu
-        menu.exec_(self.tree_widget.viewport().mapToGlobal(position))
+        menu.exec_(widget.mapToGlobal(position))
         
     def add_group(self):
-        """Add a new layer group"""
+        """Add a new layer group (placeholder)"""
         name, ok = QInputDialog.getText(
             self, 
             "New Group", 
@@ -617,21 +554,15 @@ class LayerControlPanel(QWidget):
             text="New Group"
         )
         if ok and name:
-            if name not in self.group_items:
-                self._create_group_item(name)
-                self.layer_manager.layer_groups[name] = []
-                logger.info(f"Added new group: {name}")
-                
+            # For now, just add to layer manager
+            self.layer_manager.layer_groups[name] = []
+            logger.info(f"Added new group: {name}")
+            
     def remove_selected(self):
         """Remove selected layer"""
-        items = self.tree_widget.selectedItems()
-        if items:
-            item = items[0]
-            data = item.data(0, Qt.UserRole)
-            if data and 'layer_name' in data:
-                layer_name = data['layer_name']
-                self.layer_manager.remove_layer(layer_name)
+        if self.current_layer:
+            self.layer_manager.remove_layer(self.current_layer)
 
 
-# Keep alias for backwards compatibility
-ModernLayerControlPanel = LayerControlPanel 
+# Keep backwards compatibility
+LayerControlPanel = ModernLayerControlPanel 
