@@ -26,6 +26,7 @@ class ProcessingPipeline(QObject):
     processing_finished = Signal(ProcessingResult)
     progress_updated = Signal(int, str)  # Progress percentage, message
     error_occurred = Signal(str)
+    layer_created = Signal(object)  # UXOLayer created during processing
     
     def __init__(self):
         super().__init__()
@@ -142,7 +143,8 @@ class ProcessingPipeline(QObject):
             processor.process,
             data,
             params,
-            input_file_path=self.current_input_file
+            input_file_path=self.current_input_file,
+            processor_instance=processor  # Pass processor instance for layer creation
         )
         
         # Connect signals
@@ -154,6 +156,9 @@ class ProcessingPipeline(QObject):
         )
         self.current_worker.finished.connect(self._on_processing_finished)
         self.current_worker.error.connect(self.error_occurred.emit)
+        
+        # Connect layer creation signal to forward to main application
+        self.current_worker.layer_created.connect(self.layer_created.emit)
         
         # Start processing
         logger.info(f"Starting {processor.name} processing in background thread")

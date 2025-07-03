@@ -210,18 +210,295 @@ The `ProcessingResult` object is crucial for communicating the outcome of your s
         )
         ```
 
-    * **Adding Visualization Layers:** To integrate with a future mapping system, you can add layer data.
+    * **Adding Visualization Layers:** The enhanced layer system now automatically converts LayerOutput objects to UXOLayer objects for real-time map visualization.
 
         ```python
+        # Basic point layer with custom name
         result.add_layer_output(
-            layer_type="survey_track",
-            data=df[['UTM_Easting', 'UTM_Northing']],
-            style_info={'color': 'blue', 'weight': 2},
-            metadata={'description': 'Survey flight path'}
+            layer_type='points',
+            data=processed_df,
+            style_info={
+                'color_field': 'R1 [nT]',
+                'use_graduated_colors': True,
+                'color_scheme': 'magnetic',
+                'size': 4,
+                'opacity': 0.8
+            },
+            metadata={
+                'description': 'Processed magnetic readings with residual anomalies',
+                'total_points': len(processed_df),
+                'data_type': 'magnetic_residuals',
+                'layer_name': 'Magnetic Residuals'  # Custom layer name
+            }
+        )
+        
+        # Flight path layer
+        result.add_layer_output(
+            layer_type='flight_lines',
+            data=flight_path_df,
+            style_info={
+                'line_color': '#FF6600',
+                'line_width': 2,
+                'line_opacity': 0.9
+            },
+            metadata={
+                'description': 'Survey flight path',
+                'data_type': 'flight_path'
+            }
+        )
+        
+        # Anomaly highlights
+        result.add_layer_output(
+            layer_type='processed',
+            data=anomaly_df,
+            style_info={
+                'color': '#FF0000',
+                'size': 8,
+                'opacity': 1.0,
+                'show_labels': True,
+                'label_field': 'anomaly_strength'
+            },
+            metadata={
+                'description': 'Detected magnetic anomalies',
+                'data_type': 'magnetic_anomalies',
+                'anomaly_threshold': 2.0
+            }
         )
         ```
 
-## 4. Best Practices and Recommendations
+## 4. Enhanced Layer Generation System
+
+The UXO-Wizard now includes a powerful modular layer generation system that automatically converts your processing outputs into interactive map layers. This system provides universal layer creation methods that all processors inherit from the `BaseProcessor` class.
+
+### 4.1 Automatic Layer Creation
+
+When your script generates `LayerOutput` objects using `result.add_layer_output()`, the system automatically:
+
+1. **Converts to UXOLayer objects**: LayerOutput → ProcessingWorker → UXOLayer
+2. **Applies intelligent styling**: Based on processor type and data characteristics
+3. **Detects coordinate systems**: Automatic Norwegian UTM zone detection (32-35)
+4. **Groups layers logically**: By processor type and data type in LayerManager
+5. **Displays in real-time**: Layers appear immediately in the map interface
+6. **Uses custom names**: Specify `layer_name` in metadata for custom layer names
+
+### 4.2 Supported Layer Types
+
+#### Point Layers (`layer_type='points'`)
+For coordinate-based data points:
+```python
+result.add_layer_output(
+    layer_type='points',
+    data=dataframe_with_coords,
+    style_info={
+        'color_field': 'value_column',     # Column for color mapping
+        'use_graduated_colors': True,      # Enable data-driven colors
+        'color_scheme': 'magnetic',        # Color scheme for processor type
+        'size': 4,                         # Point size
+        'opacity': 0.8,                    # Point opacity
+        'enable_clustering': True          # Cluster dense points
+    },
+    metadata={
+        'description': 'Layer description',
+        'coordinate_columns': {'latitude': 'lat_col', 'longitude': 'lon_col'},
+        'total_points': len(dataframe_with_coords),
+        'data_type': 'descriptive_type'
+    }
+)
+```
+
+#### Vector Layers (`layer_type='flight_lines'` or `layer_type='vector'`)
+For lines and paths:
+```python
+result.add_layer_output(
+    layer_type='flight_lines',
+    data=gps_track_dataframe,
+    style_info={
+        'line_color': '#FF6600',
+        'line_width': 2,
+        'line_opacity': 0.9,
+        'show_labels': False
+    },
+    metadata={
+        'description': 'Survey flight path',
+        'data_type': 'flight_path'
+    }
+)
+```
+
+#### Raster Layers (`layer_type='grid_visualization'` or `layer_type='raster'`)
+For gridded/interpolated data:
+```python
+result.add_layer_output(
+    layer_type='grid_visualization',
+    data=numpy_grid_array,
+    style_info={
+        'use_graduated_colors': True,
+        'color_scheme': 'amplitude',
+        'opacity': 0.7
+    },
+    metadata={
+        'description': 'Interpolated field data',
+        'grid_shape': numpy_grid_array.shape,
+        'bounds': [min_x, min_y, max_x, max_y],
+        'data_type': 'interpolated_grid'
+    }
+)
+```
+
+#### Processed Layers (`layer_type='processed'`)
+For derived/analyzed data (anomalies, features):
+```python
+result.add_layer_output(
+    layer_type='processed',
+    data=anomaly_dataframe,
+    style_info={
+        'color': '#FF0000',
+        'size': 8,
+        'opacity': 1.0,
+        'show_labels': True,
+        'label_field': 'anomaly_id'
+    },
+    metadata={
+        'description': 'Detected anomalies',
+        'data_type': 'anomalies',
+        'detection_threshold': threshold_value
+    }
+)
+```
+
+### 4.3 Inherited Layer Methods
+
+All processors inherit universal layer generation methods from `BaseProcessor`. While you typically use `result.add_layer_output()`, these methods are available for advanced use cases:
+
+```python
+# In your script's execute method
+def execute(self, data, params, progress_callback=None, input_file_path=None):
+    # Standard processing...
+    result = ProcessingResult(success=True)
+    
+    # Multiple layer generation approaches:
+    
+    # Approach 1: Standard LayerOutput (recommended)
+    result.add_layer_output(
+        layer_type='points',
+        data=processed_data,
+        style_info={'color': 'blue', 'size': 4},
+        metadata={'description': 'Processed data'}
+    )
+    
+    # Approach 2: Advanced multi-layer generation
+    self._generate_comprehensive_layers(processed_data, result, params)
+    
+    return result
+
+def _generate_comprehensive_layers(self, data, result, params):
+    """Generate multiple related layers for comprehensive visualization"""
+    
+    # Main data layer
+    result.add_layer_output(
+        layer_type='points',
+        data=data,
+        style_info={
+            'color_field': 'primary_value',
+            'use_graduated_colors': True,
+            'size': 4
+        },
+        metadata={'description': 'Main dataset', 'data_type': 'primary'}
+    )
+    
+    # Filtered anomalies
+    anomalies = data[data['primary_value'] > data['primary_value'].quantile(0.95)]
+    if len(anomalies) > 0:
+        result.add_layer_output(
+            layer_type='processed',
+            data=anomalies,
+            style_info={'color': '#FF0000', 'size': 8},
+            metadata={'description': 'High-value anomalies', 'data_type': 'anomalies'}
+        )
+    
+    # Survey path (if GPS track available)
+    if self._has_continuous_gps(data):
+        flight_path = self._create_flight_path(data)
+        result.add_layer_output(
+            layer_type='flight_lines',
+            data=flight_path,
+            style_info={'line_color': '#FF6600', 'line_width': 2},
+            metadata={'description': 'Survey path', 'data_type': 'flight_path'}
+        )
+```
+
+### 4.4 Styling Guidelines by Processor Type
+
+#### Magnetic Data
+```python
+style_info = {
+    'color_scheme': 'magnetic',  # Blue → Red magnetic scale
+    'color_ramp': ["#000080", "#0000FF", "#00FFFF", "#00FF00", "#FFFF00", "#FF8000", "#FF0000"],
+    'size': 4,
+    'opacity': 0.8
+}
+```
+
+#### Gamma Radiation
+```python
+style_info = {
+    'color_scheme': 'gamma',  # Green → Red radiation scale
+    'color_ramp': ["#004400", "#008800", "#00CC00", "#CCCC00", "#CC8800", "#CC0000"],
+    'size': 5,
+    'opacity': 0.9
+}
+```
+
+#### GPR Data
+```python
+style_info = {
+    'color_scheme': 'gpr',  # Navy → Brown amplitude scale
+    'color_ramp': ["#000066", "#0066CC", "#66CCFF", "#CCCCCC", "#FFCC66", "#CC6600"],
+    'size': 4,
+    'opacity': 0.8
+}
+```
+
+### 4.5 Norwegian UTM Coordinate Support
+
+The system automatically handles Norwegian UTM zones (32, 33, 34, 35):
+
+```python
+# Coordinate system detection is automatic
+# Your script should work with lat/lon or UTM columns as-is
+
+# UTM zone detection logic (handled automatically):
+# Zone 32: 6°E - 12°E
+# Zone 33: 12°E - 18°E  (default for Norway)
+# Zone 34: 18°E - 24°E
+# Zone 35: 24°E - 30°E
+
+# The system will detect and set the appropriate CRS:
+# EPSG:25832 (UTM 32N), EPSG:25833 (UTM 33N), 
+# EPSG:25834 (UTM 34N), EPSG:25835 (UTM 35N)
+```
+
+### 4.6 Layer Grouping and Organization
+
+Layers are automatically organized in the LayerManager based on:
+
+1. **Processor type**: From `metadata['processor_type']`
+2. **Processing history**: From layer processing lineage
+3. **Data type**: From `metadata['data_type']`
+
+Example layer groups:
+- "Magnetic Processing" (for magnetic processor outputs)
+- "Survey Data" (for raw data visualizations)
+- "Annotations" (for user-added layers)
+
+### 4.7 Performance Considerations
+
+- **Point limits**: Keep point layers under 10,000 points for performance
+- **Clustering**: Enable clustering for dense point data
+- **Subsampling**: Create overview layers for large datasets
+- **Memory**: Large raster layers should be optimized or tiled
+
+## 5. Best Practices and Recommendations
 
 * **Immutability:** Treat the input `data` DataFrame as immutable. Create a copy before you start modifying it: `df = data.copy()`.
 * **Robust Parameter Access:** When accessing parameters, use `.get()` to avoid `KeyError` if the structure changes. As seen in `magbase_processing.py`: `process_opts = params.get('processing_options', {})`.

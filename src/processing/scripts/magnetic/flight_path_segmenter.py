@@ -996,36 +996,34 @@ class FlightPathSegmenter(ScriptInterface):
                          segments: Dict[str, List[pd.DataFrame]]) -> None:
         """Add layer outputs for map visualization integration"""
         
-        # Add original flight path as a layer
-        result.add_layer_output(
-            layer_type="original_flight_path",
-            data=df[['UTM_Easting', 'UTM_Northing', 'Latitude [Decimal Degrees]', 'Longitude [Decimal Degrees]']],
-            style_info={'color': 'gray', 'weight': 1, 'opacity': 0.5},
-            metadata={'description': 'Complete original flight path'}
-        )
+        from loguru import logger
         
-        # Add segmented flight lines as separate layers
-        colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown']
-        for i, (direction, seg_lines) in enumerate(segments.items()):
-            for j, seg_data in enumerate(seg_lines):
-                if not seg_data.empty:
-                    result.add_layer_output(
-                        layer_type="segmented_flight_line",
-                        data=seg_data[['UTM_Easting', 'UTM_Northing', 'Latitude [Decimal Degrees]', 'Longitude [Decimal Degrees]']],
-                        style_info={
-                            'color': colors[i % len(colors)], 
-                            'weight': 3, 
-                            'opacity': 0.8,
-                            'direction': direction,
-                            'line_number': j+1
-                        },
-                        metadata={
-                            'description': f'Segmented flight line: {direction} (Line {j+1})',
-                            'direction': direction,
-                            'line_index': j,
-                            'points': len(seg_data)
-                        }
-                    )
+        # DISABLE LAYER CREATION TO TEST IF THIS IS THE SOURCE OF THE BUG
+        logger.info("Layer creation disabled for testing - bug investigation")
+        return
+        
+        # # DRASTICALLY limit data to test - sample only every 100th point
+        # sample_rate = max(1, len(df) // 100)  # Max 100 points total
+        # sampled_df = df.iloc[::sample_rate].copy()
+        
+        # logger.info(f"Sampled {len(sampled_df)} points from {len(df)} total")
+        
+        # # Test with minimal data - just ONE simple layer
+        # result.add_layer_output(
+        #     layer_type="points",
+        #     data=sampled_df[['Latitude [Decimal Degrees]', 'Longitude [Decimal Degrees]']].head(50),  # Max 50 points
+        #     style_info={
+        #         'color': '#FF0000',
+        #         'size': 5, 
+        #         'opacity': 1.0
+        #     },
+        #     metadata={
+        #         'description': 'Test flight path sample',
+        #         'layer_name': 'Test Layer'
+        #     }
+        # )
+        
+        # logger.info("Created 1 test layer with 50 points max")
 
 
 # Export the script class for discovery

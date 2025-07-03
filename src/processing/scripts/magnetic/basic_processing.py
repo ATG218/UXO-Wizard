@@ -113,11 +113,12 @@ class BasicMagneticProcessing(ScriptInterface):
                 'parameters': params
             }
             
-            # Add layer output for future consumption
-            if result_data is not None and not result_data.empty:
-                # Detect coordinate columns
+            # Generate visualization layers if requested
+            if gen_viz and result_data is not None and not result_data.empty:
+                self._generate_basic_layers(result_data, result, layer_type)
+            elif result_data is not None and not result_data.empty:
+                # Always generate at least one basic layer
                 coord_cols = self._detect_coordinates(result_data)
-                
                 if coord_cols:
                     result.add_layer_output(
                         layer_type=layer_type,
@@ -128,8 +129,10 @@ class BasicMagneticProcessing(ScriptInterface):
                             'opacity': 0.7
                         },
                         metadata={
+                            'description': 'Basic magnetic data processing output',
                             'coordinate_columns': coord_cols,
-                            'total_points': len(result_data)
+                            'total_points': len(result_data),
+                            'data_type': 'basic_processing'
                         }
                     )
             
@@ -170,6 +173,82 @@ class BasicMagneticProcessing(ScriptInterface):
                     break
         
         return detected
+    
+    def _generate_basic_layers(self, data: pd.DataFrame, result: ProcessingResult, layer_type: str):
+        """
+        Demonstrate multiple layer generation patterns for basic processing
+        This shows other processor developers how to create multiple layers
+        """
+        coord_cols = self._detect_coordinates(data)
+        
+        if not coord_cols:
+            return
+        
+        # 1. Main data layer - demonstrates point layer with coordinate detection
+        result.add_layer_output(
+            layer_type=layer_type,
+            data=data,
+            style_info={
+                'color': '#0066CC',
+                'size': 4,
+                'opacity': 0.8,
+                'use_graduated_colors': False
+            },
+            metadata={
+                'description': 'Basic processed magnetic data',
+                'coordinate_columns': coord_cols,
+                'total_points': len(data),
+                'data_type': 'basic_main_data'
+            }
+        )
+        
+        # 2. Numeric data layer - demonstrates graduated colors based on first numeric column
+        numeric_cols = data.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            first_numeric = numeric_cols[0]
+            
+            result.add_layer_output(
+                layer_type='points',
+                data=data,
+                style_info={
+                    'color_field': first_numeric,
+                    'use_graduated_colors': True,
+                    'color_scheme': 'viridis',
+                    'size': 5,
+                    'opacity': 0.9
+                },
+                metadata={
+                    'description': f'Data colored by {first_numeric}',
+                    'coordinate_columns': coord_cols,
+                    'color_field': first_numeric,
+                    'total_points': len(data),
+                    'data_type': 'colored_by_value'
+                }
+            )
+        
+        # 3. Subsampled layer - demonstrates data reduction for performance
+        if len(data) > 100:
+            # Create subsampled version for overview
+            step = max(1, len(data) // 50)  # Reduce to ~50 points
+            subsampled = data.iloc[::step].copy()
+            
+            result.add_layer_output(
+                layer_type='points',
+                data=subsampled,
+                style_info={
+                    'color': '#FF6600',
+                    'size': 6,
+                    'opacity': 0.7,
+                    'show_labels': True
+                },
+                metadata={
+                    'description': f'Subsampled overview ({len(subsampled)} points)',
+                    'coordinate_columns': coord_cols,
+                    'original_points': len(data),
+                    'subsampled_points': len(subsampled),
+                    'data_type': 'subsampled_overview'
+                }
+            )
 
 
 # Export the script class

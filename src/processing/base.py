@@ -13,6 +13,15 @@ import os
 import glob
 import importlib.util
 import sys
+import numpy as np
+
+# Import layer system components for layer generation
+try:
+    from ..ui.map.layer_types import UXOLayer, LayerType, GeometryType, LayerStyle, LayerSource, NORWEGIAN_CRS
+    LAYER_SYSTEM_AVAILABLE = True
+except ImportError:
+    logger.warning("Layer system not available - layer_types module not found")
+    LAYER_SYSTEM_AVAILABLE = False
 
 
 class ProcessingError(Exception):
@@ -164,13 +173,16 @@ class ProcessingWorker(QThread):
     status = Signal(str)    # Status message
     finished = Signal(ProcessingResult)  # Final result
     error = Signal(str)     # Error message
+    layer_created = Signal(object)  # UXOLayer for automatic layer registration
     
-    def __init__(self, processor_func: Callable, data: pd.DataFrame, params: Dict[str, Any], input_file_path: Optional[str] = None):
+    def __init__(self, processor_func: Callable, data: pd.DataFrame, params: Dict[str, Any], 
+                 input_file_path: Optional[str] = None, processor_instance: 'BaseProcessor' = None):
         super().__init__()
         self.processor_func = processor_func
         self.data = data
         self.params = params
         self.input_file_path = input_file_path
+        self.processor_instance = processor_instance  # Reference to processor for layer creation
         self._is_cancelled = False
         
     def run(self):
@@ -195,6 +207,22 @@ class ProcessingWorker(QThread):
             )
             
             result.processing_time = time.time() - start_time
+            
+            # Convert LayerOutput objects to UXOLayer objects and emit them
+            if result.success and result.layer_outputs and LAYER_SYSTEM_AVAILABLE:
+                logger.info(f"Processing {len(result.layer_outputs)} layer outputs")
+                if self.processor_instance:
+                    for layer_output in result.layer_outputs:
+                        try:
+                            uxo_layer = self._convert_layer_output_to_uxo_layer(layer_output, result)
+                            if uxo_layer:
+                                self.layer_created.emit(uxo_layer)
+                                logger.info(f"Created and emitted layer: {uxo_layer.name}")
+                        except Exception as e:
+                            logger.error(f"Failed to create layer: {str(e)}")
+                else:
+                    logger.warning("No processor instance available for layer creation")
+            
             self.finished.emit(result)
             
         except Exception as e:
@@ -204,6 +232,59 @@ class ProcessingWorker(QThread):
                 success=False,
                 error_message=str(e)
             ))
+    
+    def _convert_layer_output_to_uxo_layer(self, layer_output: LayerOutput, result: ProcessingResult) -> Optional['UXOLayer']:
+        """Convert LayerOutput to UXOLayer using processor's layer creation methods"""
+        try:
+            # Use layer_name from metadata if provided, otherwise auto-generate
+            if layer_output.metadata and 'layer_name' in layer_output.metadata:
+                name = layer_output.metadata['layer_name']
+            else:
+                name = f"{result.processor_type or 'Processing'} - {layer_output.layer_type.replace('_', ' ').title()}"
+            
+            # Convert style_info to proper style_overrides format
+            style_overrides = {}
+            if layer_output.style_info:
+                # Map common style_info keys to LayerStyle attributes
+                style_mapping = {
+                    'color': 'point_color',
+                    'size': 'point_size',
+                    'opacity': 'point_opacity',
+                    'line_color': 'line_color',
+                    'line_width': 'line_width',
+                    'line_opacity': 'line_opacity',
+                    'fill_color': 'fill_color',
+                    'color_field': 'color_field',
+                    'color_scheme': 'color_ramp',
+                    'use_graduated_colors': 'use_graduated_colors'
+                }
+                
+                for old_key, new_key in style_mapping.items():
+                    if old_key in layer_output.style_info:
+                        style_overrides[new_key] = layer_output.style_info[old_key]
+            
+            # Enhanced metadata from layer output and processing result
+            enhanced_metadata = {
+                'processing_script': result.script_id or result.processing_script,
+                'input_file': result.input_file_path,
+                'layer_output_metadata': layer_output.metadata,
+                'processing_metadata': result.metadata or {}
+            }
+            
+            # Create the UXOLayer using processor's method
+            uxo_layer = self.processor_instance.create_layer(
+                layer_type=layer_output.layer_type,
+                data=layer_output.data,
+                name=name,
+                style_overrides=style_overrides,
+                metadata=enhanced_metadata
+            )
+            
+            return uxo_layer
+            
+        except Exception as e:
+            logger.error(f"Failed to convert LayerOutput to UXOLayer: {str(e)}")
+            return None
     
     def cancel(self):
         """Cancel the processing"""
@@ -457,8 +538,8 @@ class BaseProcessor(ABC):
         
         # Common patterns for different data types
         patterns = {
-            'latitude': ['lat', 'latitude', 'y', 'northing'],
-            'longitude': ['lon', 'lng', 'longitude', 'x', 'easting'],
+            'latitude': ['lat', 'latitude', 'y', 'northing', 'utm_northing'],
+            'longitude': ['lon', 'lng', 'longitude', 'x', 'easting', 'utm_easting'],
             'timestamp': ['time', 'timestamp', 'datetime', 'date'],
             'altitude': ['alt', 'altitude', 'height', 'z'],
             'magnetic': ['mag', 'magnetic', 'btotal', 'field'],
@@ -474,6 +555,368 @@ class BaseProcessor(ABC):
                     break
                     
         return detected
+    
+    # ===== UNIVERSAL LAYER GENERATION METHODS =====
+    # These methods can be inherited by all processor types
+    
+    def create_layer(self, layer_type: str, data: Any, name: str = None, 
+                    style_overrides: Dict[str, Any] = None, metadata: Dict[str, Any] = None,
+                    geometry_type: GeometryType = None) -> 'UXOLayer':
+        """
+        Universal layer creation method inherited by all processors
+        
+        Args:
+            layer_type: Type of layer ('points', 'raster', 'vector', etc.)
+            data: Layer data (DataFrame, numpy array, etc.)
+            name: Layer name (auto-generated if None)
+            style_overrides: Custom styling options
+            metadata: Additional metadata
+            geometry_type: Specific geometry type (auto-detected if None)
+            
+        Returns:
+            UXOLayer object ready for map display
+        """
+        if not LAYER_SYSTEM_AVAILABLE:
+            logger.warning("Layer system not available - cannot create layer")
+            return None
+            
+        # Auto-generate name if not provided
+        if name is None:
+            name = f"{self.name} - {layer_type.replace('_', ' ').title()}"
+        
+        # Auto-detect geometry type if not specified
+        if geometry_type is None:
+            geometry_type = self._detect_layer_geometry(data, layer_type)
+        
+        # Map layer types to UXOLayer types
+        layer_type_mapping = {
+            'points': LayerType.POINTS,
+            'point_data': LayerType.POINTS,
+            'raster': LayerType.RASTER,
+            'grid_visualization': LayerType.RASTER,
+            'heatmap': LayerType.RASTER,
+            'vector': LayerType.VECTOR,
+            'flight_lines': LayerType.VECTOR,
+            'flight_path': LayerType.VECTOR,
+            'processed': LayerType.PROCESSED,
+            'annotation': LayerType.ANNOTATION
+        }
+        
+        uxo_layer_type = layer_type_mapping.get(layer_type, LayerType.PROCESSED)
+        
+        # Generate appropriate styling
+        style = self._generate_layer_style(data, layer_type, style_overrides)
+        
+        # Calculate bounds for the data
+        bounds = self._calculate_layer_bounds(data, geometry_type)
+        
+        # Create comprehensive metadata
+        layer_metadata = {
+            'processor_type': self.processor_type,
+            'data_type': type(data).__name__,
+            'creation_timestamp': time.time(),
+            'coordinate_system': self._detect_coordinate_system(data),
+            'data_summary': self._generate_data_summary(data)
+        }
+        
+        # Merge with provided metadata
+        if metadata:
+            layer_metadata.update(metadata)
+        
+        # Create UXOLayer
+        return UXOLayer(
+            name=name,
+            layer_type=uxo_layer_type,
+            data=data,
+            geometry_type=geometry_type,
+            style=style,
+            metadata=layer_metadata,
+            source=LayerSource.PROCESSING,
+            bounds=bounds,
+            processing_history=[self.processor_type]
+        )
+    
+    def create_point_layer(self, data: pd.DataFrame, name: str = None, 
+                          color_field: str = None, style_overrides: Dict[str, Any] = None,
+                          **kwargs) -> 'UXOLayer':
+        """
+        Create point layer with coordinate auto-detection
+        
+        Args:
+            data: DataFrame with coordinate columns
+            name: Layer name
+            color_field: Column for graduated colors
+            style_overrides: Custom styling
+            
+        Returns:
+            UXOLayer with point geometry
+        """
+        # Detect coordinate columns
+        coord_info = self.detect_columns(data)
+        
+        if 'latitude' not in coord_info or 'longitude' not in coord_info:
+            logger.warning("Cannot create point layer - coordinate columns not found")
+            return None
+        
+        # Create enhanced metadata
+        metadata = {
+            'coordinate_columns': coord_info,
+            'total_points': len(data),
+            'color_field': color_field
+        }
+        metadata.update(kwargs.get('metadata', {}))
+        
+        # Enhanced styling for points
+        if style_overrides is None:
+            style_overrides = {}
+        
+        if color_field and color_field in data.columns:
+            style_overrides.update({
+                'use_graduated_colors': True,
+                'color_field': color_field
+            })
+        
+        return self.create_layer(
+            layer_type='points',
+            data=data,
+            name=name,
+            geometry_type=GeometryType.POINT,
+            style_overrides=style_overrides,
+            metadata=metadata
+        )
+    
+    def create_raster_layer(self, data: np.ndarray, bounds: List[float], 
+                           name: str = None, style_overrides: Dict[str, Any] = None,
+                           **kwargs) -> 'UXOLayer':
+        """
+        Create raster layer for interpolated grids
+        
+        Args:
+            data: Numpy array with grid data
+            bounds: Spatial bounds [min_x, min_y, max_x, max_y]
+            name: Layer name
+            style_overrides: Custom styling
+            
+        Returns:
+            UXOLayer with raster geometry
+        """
+        metadata = {
+            'grid_shape': data.shape,
+            'data_range': [float(np.nanmin(data)), float(np.nanmax(data))],
+            'bounds': bounds
+        }
+        metadata.update(kwargs.get('metadata', {}))
+        
+        # Enhanced styling for rasters
+        if style_overrides is None:
+            style_overrides = {}
+        
+        style_overrides.update({
+            'use_graduated_colors': True,
+            'opacity': 0.7
+        })
+        
+        return self.create_layer(
+            layer_type='raster',
+            data=data,
+            name=name,
+            geometry_type=GeometryType.RASTER,
+            style_overrides=style_overrides,
+            metadata=metadata
+        )
+    
+    def create_vector_layer(self, data: pd.DataFrame, geometry_type: GeometryType,
+                           name: str = None, style_overrides: Dict[str, Any] = None,
+                           **kwargs) -> 'UXOLayer':
+        """
+        Create vector layer for flight paths, boundaries, etc.
+        
+        Args:
+            data: DataFrame with coordinate sequences
+            geometry_type: LINE, POLYGON, etc.
+            name: Layer name
+            style_overrides: Custom styling
+            
+        Returns:
+            UXOLayer with vector geometry
+        """
+        metadata = {
+            'vector_type': geometry_type.value,
+            'feature_count': len(data)
+        }
+        metadata.update(kwargs.get('metadata', {}))
+        
+        return self.create_layer(
+            layer_type='vector',
+            data=data,
+            name=name,
+            geometry_type=geometry_type,
+            style_overrides=style_overrides,
+            metadata=metadata
+        )
+    
+    def _detect_layer_geometry(self, data: Any, layer_type: str) -> GeometryType:
+        """Auto-detect geometry type from data structure"""
+        if isinstance(data, np.ndarray) and data.ndim >= 2:
+            return GeometryType.RASTER
+        elif isinstance(data, pd.DataFrame):
+            if layer_type in ['flight_lines', 'flight_path']:
+                return GeometryType.LINE
+            elif any(col in str(data.columns).lower() for col in ['lat', 'lon', 'x', 'y', 'northing', 'easting']):
+                return GeometryType.POINT
+        elif isinstance(data, list) and len(data) > 0:
+            if isinstance(data[0], (list, tuple)) and len(data[0]) == 2:
+                return GeometryType.LINE
+        
+        # Default fallback
+        return GeometryType.POINT
+    
+    def _generate_layer_style(self, data: Any, layer_type: str, 
+                             style_overrides: Dict[str, Any] = None) -> LayerStyle:
+        """Generate appropriate styling based on processor type and data"""
+        style = LayerStyle()
+        
+        # Processor-specific styling
+        if self.processor_type == 'magnetic':
+            style = self._create_magnetic_style(data, layer_type)
+        elif self.processor_type == 'gamma':
+            style = self._create_gamma_style(data, layer_type)
+        elif self.processor_type == 'gpr':
+            style = self._create_gpr_style(data, layer_type)
+        else:
+            # Default styling
+            style = self._create_default_style(layer_type)
+        
+        # Apply overrides
+        if style_overrides:
+            for key, value in style_overrides.items():
+                if hasattr(style, key):
+                    setattr(style, key, value)
+        
+        return style
+    
+    def _create_magnetic_style(self, data: Any, layer_type: str) -> LayerStyle:
+        """Create magnetic-specific styling"""
+        if layer_type in ['points', 'point_data']:
+            return LayerStyle(
+                point_color="#0066CC",
+                point_size=4,
+                point_opacity=0.8,
+                enable_clustering=True,
+                cluster_distance=25,
+                use_graduated_colors=True,
+                color_ramp=["#000080", "#0000FF", "#00FFFF", "#00FF00", "#FFFF00", "#FF8000", "#FF0000"]
+            )
+        elif layer_type in ['raster', 'grid_visualization', 'heatmap']:
+            return LayerStyle(
+                use_graduated_colors=True,
+                color_ramp=["#000080", "#0000FF", "#00FFFF", "#00FF00", "#FFFF00", "#FF8000", "#FF0000"],
+                opacity=0.7,
+                fill_opacity=0.8
+            )
+        elif layer_type in ['flight_lines', 'flight_path']:
+            return LayerStyle(
+                line_color="#FF6600",
+                line_width=2,
+                line_opacity=1.0,
+                show_labels=True
+            )
+        
+        return LayerStyle(point_color="#0066CC", point_size=4)
+    
+    def _create_gamma_style(self, data: Any, layer_type: str) -> LayerStyle:
+        """Create gamma radiation-specific styling"""
+        return LayerStyle(
+            point_color="#00CC66",
+            point_size=5,
+            use_graduated_colors=True,
+            color_ramp=["#004400", "#008800", "#00CC00", "#CCCC00", "#CC8800", "#CC0000"]
+        )
+    
+    def _create_gpr_style(self, data: Any, layer_type: str) -> LayerStyle:
+        """Create GPR-specific styling"""
+        return LayerStyle(
+            point_color="#CC6600",
+            point_size=4,
+            use_graduated_colors=True,
+            color_ramp=["#000066", "#0066CC", "#66CCFF", "#CCCCCC", "#FFCC66", "#CC6600"]
+        )
+    
+    def _create_default_style(self, layer_type: str) -> LayerStyle:
+        """Create default styling for unknown processor types"""
+        if layer_type in ['points', 'point_data']:
+            return LayerStyle(point_color="#666666", point_size=4)
+        elif layer_type in ['raster', 'grid_visualization']:
+            return LayerStyle(use_graduated_colors=True, opacity=0.7)
+        elif layer_type in ['flight_lines', 'vector']:
+            return LayerStyle(line_color="#333333", line_width=2)
+        
+        return LayerStyle()
+    
+    def _calculate_layer_bounds(self, data: Any, geometry_type: GeometryType) -> Optional[List[float]]:
+        """Calculate spatial bounds for Norwegian UTM zones"""
+        if isinstance(data, pd.DataFrame):
+            coord_info = self.detect_columns(data)
+            lat_col = coord_info.get('latitude')
+            lon_col = coord_info.get('longitude')
+            
+            if lat_col and lon_col:
+                try:
+                    min_lat, max_lat = data[lat_col].min(), data[lat_col].max()
+                    min_lon, max_lon = data[lon_col].min(), data[lon_col].max()
+                    return [float(min_lon), float(min_lat), float(max_lon), float(max_lat)]
+                except:
+                    pass
+            
+            # Try UTM columns
+            utm_east_cols = [col for col in data.columns if 'easting' in col.lower()]
+            utm_north_cols = [col for col in data.columns if 'northing' in col.lower()]
+            
+            if utm_east_cols and utm_north_cols:
+                try:
+                    min_east, max_east = data[utm_east_cols[0]].min(), data[utm_east_cols[0]].max()
+                    min_north, max_north = data[utm_north_cols[0]].min(), data[utm_north_cols[0]].max()
+                    return [float(min_east), float(min_north), float(max_east), float(max_north)]
+                except:
+                    pass
+        
+        return None
+    
+    def _detect_coordinate_system(self, data: Any) -> str:
+        """Detect coordinate system from data"""
+        if isinstance(data, pd.DataFrame):
+            coord_info = self.detect_columns(data)
+            
+            # Check for UTM columns
+            utm_cols = [col for col in data.columns if any(utm_word in col.lower() 
+                       for utm_word in ['utm', 'easting', 'northing'])]
+            if utm_cols:
+                # Try to detect UTM zone from data bounds or column names
+                for zone in [32, 33, 34, 35]:  # Norwegian UTM zones
+                    if str(zone) in ' '.join(data.columns):
+                        return f"EPSG:258{zone}"
+                return "EPSG:25833"  # Default to UTM 33N for Norway
+            
+            # Check for lat/lon
+            if 'latitude' in coord_info and 'longitude' in coord_info:
+                return "EPSG:4326"  # WGS84
+        
+        return "EPSG:4326"  # Default
+    
+    def _generate_data_summary(self, data: Any) -> Dict[str, Any]:
+        """Generate summary statistics for data"""
+        summary = {}
+        
+        if isinstance(data, pd.DataFrame):
+            summary['rows'] = len(data)
+            summary['columns'] = len(data.columns)
+            summary['numeric_columns'] = len(data.select_dtypes(include=[np.number]).columns)
+        elif isinstance(data, np.ndarray):
+            summary['shape'] = data.shape
+            summary['dtype'] = str(data.dtype)
+            summary['size'] = data.size
+        
+        return summary
     
     def create_animation_frames(self, data: pd.DataFrame, 
                               num_frames: int = 10) -> List[pd.DataFrame]:

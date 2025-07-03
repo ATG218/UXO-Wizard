@@ -5,7 +5,7 @@ Processing Dialog for UXO Wizard - Modal dialog for data processing
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QDialogButtonBox
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 import pandas as pd
 from typing import Optional
 
@@ -15,6 +15,9 @@ from ....processing import ProcessingResult
 
 class ProcessingDialog(QDialog):
     """Modal dialog for data processing"""
+    
+    # Signals
+    layer_created = Signal(object)  # UXOLayer created during processing
     
     def __init__(self, data: pd.DataFrame, parent=None, input_file_path: Optional[str] = None):
         super().__init__(parent)
@@ -35,6 +38,10 @@ class ProcessingDialog(QDialog):
         self.processing_widget = ProcessingWidget()
         self.processing_widget.set_data(self.data, input_file_path=self.input_file_path)
         self.processing_widget.processing_complete.connect(self.on_processing_complete)
+        
+        # Forward layer creation signal
+        self.processing_widget.layer_created.connect(self.layer_created.emit)
+        
         layout.addWidget(self.processing_widget)
         
         # Dialog buttons

@@ -203,8 +203,21 @@ class LayerManager(QObject):
             self.remove_layer(name)
             
     def _auto_assign_group(self, layer: UXOLayer) -> str:
-        """Automatically assign layer to appropriate group"""
-        # Check processing history for group assignment
+        """Automatically assign layer to appropriate group with enhanced logic"""
+        
+        # Check metadata for processor type (enhanced for new layer generation system)
+        processor_type = layer.metadata.get('processor_type', '').lower()
+        if processor_type:
+            if processor_type == 'magnetic':
+                return "Magnetic Processing"
+            elif processor_type == 'gpr':
+                return "GPR Processing" 
+            elif processor_type == 'gamma':
+                return "Gamma Processing"
+            elif processor_type == 'multispectral':
+                return "Multispectral Processing"
+        
+        # Check processing history for group assignment (fallback)
         if layer.processing_history:
             last_process = layer.processing_history[-1].lower()
             if "magnetic" in last_process:
@@ -215,12 +228,24 @@ class LayerManager(QObject):
                 return "Gamma Processing"
             elif "multispectral" in last_process:
                 return "Multispectral Processing"
-                
+        
+        # Check for specific data types in metadata (for sub-grouping)
+        data_type = layer.metadata.get('data_type', '').lower()
+        if data_type:
+            if 'anomaly' in data_type or 'anomalies' in data_type:
+                # Anomaly layers get special treatment
+                if processor_type == 'magnetic':
+                    return "Magnetic Processing"  # Could be "Magnetic Anomalies" for sub-groups
+                elif processor_type:
+                    return f"{processor_type.title()} Processing"
+        
         # Check source
         if layer.source.value == "data_viewer":
             return "Survey Data"
         elif layer.source.value == "annotation":
             return "Annotations"
+        elif layer.source.value == "processing":
+            return "Data Processing"  # Generic processing group
             
         return "Other"
         

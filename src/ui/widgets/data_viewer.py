@@ -707,6 +707,10 @@ class DataViewerTab(QWidget):
             
             logger.debug("Creating processing dialog...")
             dialog = ProcessingDialog(df, self, input_file_path=self.current_file)
+            
+            # Connect layer creation signal to forward to main application
+            dialog.layer_created.connect(self.layer_created.emit)
+            
             logger.debug("Showing processing dialog...")
             
             result = dialog.exec()

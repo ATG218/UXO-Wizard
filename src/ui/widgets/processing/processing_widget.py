@@ -338,6 +338,7 @@ class ProcessingWidget(QWidget):
     
     # Signals
     processing_complete = Signal(ProcessingResult)
+    layer_created = Signal(object)  # UXOLayer created during processing
     # NOTE: data_updated signal removed for clean processor architecture
     # data_updated = Signal(pd.DataFrame)
     
@@ -474,6 +475,9 @@ class ProcessingWidget(QWidget):
         self.pipeline.processing_finished.connect(self.on_processing_finished)
         self.pipeline.progress_updated.connect(self.on_progress_updated)
         self.pipeline.error_occurred.connect(self.on_error)
+        
+        # Forward layer creation signal from pipeline to widget signal
+        self.pipeline.layer_created.connect(self.layer_created.emit)
         
     def set_data(self, data: pd.DataFrame, input_file_path: Optional[str] = None):
         """Set data to process"""
