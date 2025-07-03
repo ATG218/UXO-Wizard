@@ -77,6 +77,30 @@ class MainWindow(QMainWindow):
         
         file_menu.addSeparator()
         
+        # Project Save/Load actions
+        self.save_project_action = QAction("&Save Project (.uxo)", self)
+        self.save_project_action.setShortcut(QKeySequence.Save)
+        self.save_project_action.triggered.connect(self.save_project)
+        file_menu.addAction(self.save_project_action)
+        
+        self.save_project_as_action = QAction("Save Project &As...", self)
+        self.save_project_as_action.setShortcut(QKeySequence.SaveAs)
+        self.save_project_as_action.triggered.connect(self.save_project_as)
+        file_menu.addAction(self.save_project_as_action)
+        
+        self.load_project_action = QAction("&Load Project (.uxo)", self)
+        self.load_project_action.setShortcut("Ctrl+L")
+        self.load_project_action.triggered.connect(self.load_project)
+        file_menu.addAction(self.load_project_action)
+        
+        file_menu.addSeparator()
+        
+        self.export_project_info_action = QAction("Export Project Info...", self)
+        self.export_project_info_action.triggered.connect(self.export_project_info)
+        file_menu.addAction(self.export_project_info_action)
+        
+        file_menu.addSeparator()
+        
         self.exit_action = QAction("E&xit", self)
         self.exit_action.setShortcut(QKeySequence.Quit)
         self.exit_action.triggered.connect(self.close)
@@ -167,6 +191,9 @@ class MainWindow(QMainWindow):
         # Essential project actions
         main_toolbar.addAction(self.new_project_action)
         main_toolbar.addAction(self.open_project_action)
+        main_toolbar.addSeparator()
+        main_toolbar.addAction(self.save_project_action)
+        main_toolbar.addAction(self.load_project_action)
         
         # Processing toolbar
         process_toolbar = self.addToolBar("Processing")
@@ -184,6 +211,10 @@ class MainWindow(QMainWindow):
         # Create the map widget first since other widgets depend on it
         from .map.map_widget import UXOMapWidget
         self.map_widget = UXOMapWidget()
+        
+        # Initialize project manager
+        from ..project.project_manager import ProjectManager
+        self.project_manager = ProjectManager(self.map_widget.layer_manager)
         
         # Project Explorer Dock (far left)
         self.project_dock = QDockWidget("File Explorer", self)
@@ -231,6 +262,9 @@ class MainWindow(QMainWindow):
         self.data_dock.setWidget(self.data_viewer)
         self.data_dock.setMinimumHeight(200)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.data_dock)
+        
+        # Set data viewer reference in project manager
+        self.project_manager.set_data_viewer(self.data_viewer)
         
         # Configure the dock arrangement
         # IMPORTANT: Tabify Lab with Layers (this creates proper tabs)
@@ -353,6 +387,17 @@ class MainWindow(QMainWindow):
         self.lab_widget.file_selected.connect(self.open_file)
         self.lab_widget.script_executed.connect(self.run_processing_script)
         
+        # Project manager connections
+        self.project_manager.project_saved.connect(self.on_project_saved)
+        self.project_manager.project_loaded.connect(self.on_project_loaded)
+        self.project_manager.project_error.connect(self.on_project_error)
+        self.project_manager.working_directory_restored.connect(self.on_working_directory_restored)
+        
+        # Layer manager connections to mark project as dirty
+        self.map_widget.layer_manager.layer_added.connect(lambda: self.project_manager.mark_dirty())
+        self.map_widget.layer_manager.layer_removed.connect(lambda: self.project_manager.mark_dirty())
+        self.map_widget.layer_manager.layer_style_changed.connect(lambda: self.project_manager.mark_dirty())
+        
     def on_project_changed(self, project_path):
         """Handle project path changes"""
         if project_path:
@@ -363,9 +408,13 @@ class MainWindow(QMainWindow):
             # Update lab widget to point to new project's processing folder
             self.project_root = project_path
             self.lab_widget.set_project_root(project_path)
+            
+            # Update project manager with current working directory
+            self.project_manager.set_current_working_directory(project_path)
         else:
             # Project closed
             self.setWindowTitle("UXO Wizard Desktop Suite - Advanced")
+            self.project_manager.set_current_working_directory(None)
             
     def on_map_coordinates_clicked(self, lat, lon):
         """Handle map coordinate clicks"""
@@ -598,6 +647,173 @@ class MainWindow(QMainWindow):
         """Hide progress bar"""
         self.progress_bar.hide()
         self.status_label.setText("Ready")
+    
+    def save_project(self):
+        """Save current project"""
+        try:
+            if self.project_manager.current_file_path:
+                # Save to existing path
+                success = self.project_manager.save_project(self.project_manager.current_file_path)
+                if success:
+                    self.status_label.setText("Project saved")
+            else:
+                # No existing path, show save as dialog
+                self.save_project_as()
+        except Exception as e:
+            logger.error(f"Error saving project: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to save project:\n{str(e)}")
+    
+    def save_project_as(self):
+        """Save project with new file path"""
+        try:
+            file_dialog = QFileDialog(self)
+            file_dialog.setWindowTitle("Save Project As")
+            file_dialog.setNameFilter("UXO Project files (*.uxo);;All files (*)")
+            file_dialog.setDefaultSuffix("uxo")
+            file_dialog.setAcceptMode(QFileDialog.AcceptSave)
+            
+            # Set default filename based on current project name
+            project_name = self.project_manager.get_current_project_name() or "Untitled Project"
+            default_filename = f"{project_name}.uxo"
+            file_dialog.selectFile(default_filename)
+            
+            if file_dialog.exec():
+                selected_files = file_dialog.selectedFiles()
+                if selected_files:
+                    file_path = selected_files[0]
+                    success = self.project_manager.save_project(file_path)
+                    if success:
+                        self.status_label.setText(f"Project saved as: {file_path}")
+                        
+        except Exception as e:
+            logger.error(f"Error saving project as: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to save project:\n{str(e)}")
+    
+    def load_project(self):
+        """Load project from .uxo file"""
+        try:
+            # Check for unsaved changes
+            if self.project_manager.is_dirty():
+                reply = QMessageBox.question(
+                    self, 
+                    "Unsaved Changes",
+                    "Current project has unsaved changes. Do you want to save before loading?",
+                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                    QMessageBox.Yes
+                )
+                
+                if reply == QMessageBox.Yes:
+                    self.save_project()
+                elif reply == QMessageBox.Cancel:
+                    return
+            
+            file_dialog = QFileDialog(self)
+            file_dialog.setWindowTitle("Load Project")
+            file_dialog.setNameFilter("UXO Project files (*.uxo);;All files (*)")
+            file_dialog.setFileMode(QFileDialog.ExistingFile)
+            
+            if file_dialog.exec():
+                selected_files = file_dialog.selectedFiles()
+                if selected_files:
+                    file_path = selected_files[0]
+                    
+                    # Validate file before loading
+                    from ..project.project_validator import ProjectValidator
+                    is_valid, errors = ProjectValidator.validate_uxo_file(file_path)
+                    
+                    if not is_valid:
+                        reply = QMessageBox.question(
+                            self,
+                            "Invalid Project File",
+                            f"Project file has validation errors:\n" + "\n".join(errors[:3]) + 
+                            f"\n\nDo you want to attempt to load it anyway?",
+                            QMessageBox.Yes | QMessageBox.No,
+                            QMessageBox.No
+                        )
+                        if reply == QMessageBox.No:
+                            return
+                    
+                    success = self.project_manager.load_project(file_path)
+                    if success:
+                        self.status_label.setText(f"Project loaded: {file_path}")
+                        
+        except Exception as e:
+            logger.error(f"Error loading project: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to load project:\n{str(e)}")
+    
+    def export_project_info(self):
+        """Export project information as JSON"""
+        try:
+            if not self.project_manager.current_project:
+                QMessageBox.warning(self, "No Project", "No project is currently open.")
+                return
+            
+            file_dialog = QFileDialog(self)
+            file_dialog.setWindowTitle("Export Project Info")
+            file_dialog.setNameFilter("JSON files (*.json);;All files (*)")
+            file_dialog.setDefaultSuffix("json")
+            file_dialog.setAcceptMode(QFileDialog.AcceptSave)
+            
+            project_name = self.project_manager.get_current_project_name() or "project"
+            default_filename = f"{project_name}_info.json"
+            file_dialog.selectFile(default_filename)
+            
+            if file_dialog.exec():
+                selected_files = file_dialog.selectedFiles()
+                if selected_files:
+                    file_path = selected_files[0]
+                    success = self.project_manager.export_project_info(file_path)
+                    if success:
+                        self.status_label.setText(f"Project info exported: {file_path}")
+                        
+        except Exception as e:
+            logger.error(f"Error exporting project info: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to export project info:\n{str(e)}")
+    
+    def on_project_saved(self, file_path):
+        """Handle project saved signal"""
+        project_name = self.project_manager.get_current_project_name() or "Project"
+        self.setWindowTitle(f"UXO Wizard Desktop Suite - {project_name}")
+        logger.info(f"Project saved successfully: {file_path}")
+    
+    def on_project_loaded(self, file_path):
+        """Handle project loaded signal"""
+        project_name = self.project_manager.get_current_project_name() or "Project"
+        self.setWindowTitle(f"UXO Wizard Desktop Suite - {project_name}")
+        
+        # Show map dock and zoom to data if layers were loaded
+        if self.map_widget.layer_manager.layers:
+            self.map_dock.raise_()
+            self.map_widget.zoom_to_data()
+        
+        logger.info(f"Project loaded successfully: {file_path}")
+    
+    def on_project_error(self, operation, error_message):
+        """Handle project error signal"""
+        QMessageBox.critical(self, f"Project {operation.title()} Error", error_message)
+        logger.error(f"Project {operation} error: {error_message}")
+    
+    def on_working_directory_restored(self, working_directory):
+        """Handle working directory restoration"""
+        try:
+            # Restore the working directory in the project explorer
+            self.project_explorer.set_root_path(working_directory)
+            
+            # Update our internal tracking
+            self.project_root = working_directory
+            
+            # Update lab widget
+            self.lab_widget.set_project_root(working_directory)
+            
+            # IMPORTANT: Show and raise the project explorer dock so user can see it
+            self.project_dock.show()
+            self.project_dock.raise_()
+            self.project_dock.activateWindow()
+            
+            logger.info(f"Working directory restored and UI updated: {working_directory}")
+            
+        except Exception as e:
+            logger.error(f"Error restoring working directory: {e}")
         
     def restore_state(self):
         """Restore window state from settings"""
@@ -611,6 +827,27 @@ class MainWindow(QMainWindow):
             
     def closeEvent(self, event):
         """Save state before closing"""
+        # Check for unsaved project changes
+        if self.project_manager.is_dirty():
+            reply = QMessageBox.question(
+                self, 
+                "Unsaved Changes",
+                "You have unsaved project changes. Do you want to save before exiting?",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes
+            )
+            
+            if reply == QMessageBox.Yes:
+                self.save_project()
+                # If save was cancelled or failed, don't exit
+                if self.project_manager.is_dirty():
+                    event.ignore()
+                    return
+            elif reply == QMessageBox.Cancel:
+                event.ignore()
+                return
+        
+        # Save application state
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("windowState", self.saveState())
         

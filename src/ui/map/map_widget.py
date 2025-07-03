@@ -41,9 +41,10 @@ class UXOMapWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.layer_manager = LayerManager()
-        self.leaflet_layers: Dict[str, any] = {}  # Map layer names to leaflet objects
+        self.leaflet_layers: Dict[str, L.layerGroup] = {}
+        self._map_created = False
         self.current_draw_layer = None
-        self._map_created = False  # Track if map has been created
+        
         self.setup_ui()
         self.connect_signals()
 
@@ -213,32 +214,30 @@ class UXOMapWidget(QWidget):
     def _on_layer_added(self, layer: UXOLayer):
         """Handle layer addition"""
         try:
-            # Create appropriate Leaflet layer based on type
-            leaflet_layer = self._create_leaflet_layer(layer)
-            
-            if leaflet_layer is not None:
-                try:
-                    # Add to map
-                    if leaflet_layer._map is None:
-                        logger.warning(f"Leaflet layer '{layer.name}' has no map reference")
-                        leaflet_layer.addTo(self.map)
-                    
-                    # Store reference
-                    self.leaflet_layers[layer.name] = leaflet_layer
+            # Only create and add layer if it should be visible
+            if layer.is_visible:
+                leaflet_layer = self._create_leaflet_layer(layer)
+                
+                if leaflet_layer is not None:
+                    try:
+                        # Store reference
+                        self.leaflet_layers[layer.name] = leaflet_layer
+                        logger.info(f"Layer '{layer.name}' added and is visible")
                         
-                    logger.info(f"Successfully added layer '{layer.name}' to map")
-                    
-                    # Auto-zoom to first layer
-                    if len(self.leaflet_layers) == 1:
-                        self.zoom_to_layer(layer.name)
-                        
-                except Exception as map_error:
-                    logger.error(f"Failed to add layer '{layer.name}' to map: {map_error}")
+                        # Auto-zoom to first visible layer
+                        visible_layers = [l for l in self.layer_manager.layers.values() if l.is_visible]
+                        if len(visible_layers) == 1 and layer.name == visible_layers[0].name:
+                            self.zoom_to_layer(layer.name)
+                            
+                    except Exception as map_error:
+                        logger.error(f"Failed to add layer '{layer.name}': {map_error}")
+                else:
+                    logger.warning(f"Could not create leaflet layer for '{layer.name}'")
             else:
-                logger.warning(f"Could not create leaflet layer for '{layer.name}' - layer creation returned None")
-                    
+                logger.info(f"Layer '{layer.name}' added but not visible - skipping map display")
+                
         except Exception as e:
-            logger.error(f"Failed to add layer '{layer.name}': {e}")
+            logger.error(f"Failed to handle layer addition '{layer.name}': {e}")
             import traceback
             logger.debug(f"Full traceback: {traceback.format_exc()}")
             
@@ -270,6 +269,7 @@ class UXOMapWidget(QWidget):
             
         # Create layer group for points
         layer_group = L.layerGroup()
+        # Need to add to map for proper initialization in pyqtlet2
         layer_group.addTo(self.map)
         
         # Add points
@@ -376,25 +376,35 @@ class UXOMapWidget(QWidget):
     def _on_layer_visibility_changed(self, layer_name: str, is_visible: bool):
         """Handle layer visibility change"""
         try:
+            layer = self.layer_manager.get_layer(layer_name)
+            if not layer:
+                logger.warning(f"Layer '{layer_name}' not found in layer manager")
+                return
+                
             if is_visible:
-                # Restore layer
-                if layer_name in self.leaflet_layers:
-                    leaflet_layer = self.leaflet_layers[layer_name]
-                    # If layer already attached, nothing to do
-                    if getattr(leaflet_layer, "_map", None) is None:
-                        leaflet_layer.addTo(self.map)
+                # Show layer - create it if it doesn't exist
+                if layer_name not in self.leaflet_layers:
+                    # Create the leaflet layer
+                    leaflet_layer = self._create_leaflet_layer(layer)
+                    if leaflet_layer:
+                        self.leaflet_layers[layer_name] = leaflet_layer
+                        logger.debug(f"Created and added layer '{layer_name}' to map")
+                    else:
+                        logger.error(f"Failed to create leaflet layer for '{layer_name}'")
                 else:
-                    # If we don't have a cached leaflet layer, recreate it
-                    layer = self.layer_manager.get_layer(layer_name)
-                    if layer:
-                        self._on_layer_added(layer)
+                    logger.debug(f"Layer '{layer_name}' already exists on map")
             else:
-                # Hide layer
+                # Hide layer - remove it completely
                 if layer_name in self.leaflet_layers:
-                    leaflet_layer = self.leaflet_layers[layer_name]
-                    self.map.removeLayer(leaflet_layer)
-                    # Remove from cache so we know to recreate next time
-                    del self.leaflet_layers[layer_name]
+                    try:
+                        self.map.removeLayer(self.leaflet_layers[layer_name])
+                        del self.leaflet_layers[layer_name]
+                        logger.debug(f"Removed layer '{layer_name}' from map")
+                    except Exception as e:
+                        logger.error(f"Error removing layer '{layer_name}': {e}")
+                        # Try to clean up anyway
+                        if layer_name in self.leaflet_layers:
+                            del self.leaflet_layers[layer_name]
 
             logger.debug(f"Layer '{layer_name}' visibility set to {is_visible}")
 
