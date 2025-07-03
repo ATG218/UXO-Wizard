@@ -24,6 +24,8 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 from loguru import logger
+import json
+from datetime import datetime
 
 from .layer_types import UXOLayer, LayerType, GeometryType, LayerStyle
 from .layer_manager import LayerManager
@@ -42,6 +44,7 @@ class UXOMapWidget(QWidget):
         super().__init__()
         self.layer_manager = LayerManager()
         self.leaflet_layers: Dict[str, L.layerGroup] = {}
+        self._layer_cache: Dict[str, L.layerGroup] = {}  # Cache for hidden layers
         self._map_created = False
         self.current_draw_layer = None
         
@@ -140,6 +143,9 @@ class UXOMapWidget(QWidget):
         # Add map controls
         self._add_map_controls()
         
+        # Initialize the JavaScript-side layer management system
+        self._init_js_layer_manager()
+        
         # Set up event handlers
         self._setup_event_handlers()
         
@@ -214,130 +220,196 @@ class UXOMapWidget(QWidget):
     def _on_layer_added(self, layer: UXOLayer):
         """Handle layer addition"""
         try:
-            # Only create and add layer if it should be visible
-            if layer.is_visible:
-                leaflet_layer = self._create_leaflet_layer(layer)
-                
-                if leaflet_layer is not None:
-                    try:
-                        # Store reference
-                        self.leaflet_layers[layer.name] = leaflet_layer
-                        logger.info(f"Layer '{layer.name}' added and is visible")
-                        
-                        # Auto-zoom to first visible layer
-                        visible_layers = [l for l in self.layer_manager.layers.values() if l.is_visible]
-                        if len(visible_layers) == 1 and layer.name == visible_layers[0].name:
-                            self.zoom_to_layer(layer.name)
-                            
-                    except Exception as map_error:
-                        logger.error(f"Failed to add layer '{layer.name}': {map_error}")
+            # Create and store the layer in JavaScript
+            success = self._create_leaflet_layer(layer)
+            
+            if success:
+                # If the layer should be visible, call the JS function to show it
+                if layer.is_visible:
+                    layer_name_js = json.dumps(layer.name)
+                    self.map_widget.page.runJavaScript(f"showUxoLayer({layer_name_js});")
+                    logger.info(f"Layer '{layer.name}' created and shown on map")
                 else:
-                    logger.warning(f"Could not create leaflet layer for '{layer.name}'")
+                    logger.info(f"Layer '{layer.name}' created and stored (hidden)")
             else:
-                logger.info(f"Layer '{layer.name}' added but not visible - skipping map display")
-                
+                logger.warning(f"Could not create leaflet layer for '{layer.name}'")
+
         except Exception as e:
             logger.error(f"Failed to handle layer addition '{layer.name}': {e}")
             import traceback
             logger.debug(f"Full traceback: {traceback.format_exc()}")
             
-    def _create_leaflet_layer(self, layer: UXOLayer):
-        """Create appropriate Leaflet layer from UXOLayer"""
-        if layer.layer_type == LayerType.POINTS and layer.geometry_type == GeometryType.POINT:
-            return self._create_point_layer(layer)
-        elif layer.layer_type == LayerType.ANNOTATION and layer.geometry_type == GeometryType.POINT:
-            return self._create_point_layer(layer)  # Annotations are just styled points
+    def _create_leaflet_layer(self, layer: UXOLayer) -> bool:
+        """
+        Creates and stores a leaflet layer in the JavaScript context.
+        Returns True on success, False on failure.
+        """
+        if layer.layer_type in [LayerType.POINTS, LayerType.ANNOTATION, LayerType.PROCESSED] and layer.geometry_type == GeometryType.POINT:
+            return self._create_point_layer_geojson(layer)
         elif layer.layer_type == LayerType.RASTER:
             return self._create_raster_layer(layer)
-        elif layer.layer_type == LayerType.VECTOR:
-            return self._create_vector_layer(layer)
+        elif layer.layer_type == LayerType.VECTOR and layer.geometry_type == GeometryType.LINE:
+            return self._create_vector_layer_geojson(layer)
         else:
-            logger.warning(f"Unsupported layer type: {layer.layer_type}")
-            return None
-            
-    def _create_point_layer(self, layer: UXOLayer):
-        """Create point layer from DataFrame"""
+            logger.warning(f"Unsupported combination of layer type '{layer.layer_type.value}' and geometry type '{layer.geometry_type.value}'")
+            return False
+
+    def _create_point_layer_geojson(self, layer: UXOLayer):
+        """Create point layer from DataFrame using a single GeoJSON object for efficiency"""
         if not isinstance(layer.data, pd.DataFrame):
-            logger.error("Point layer requires DataFrame data")
-            return None
-            
-        # Detect coordinate columns
+            logger.error(f"Point layer '{layer.name}' requires DataFrame data, but got {type(layer.data)}")
+            return False
+
         lat_col, lon_col = self._detect_coordinate_columns(layer.data)
         if not lat_col or not lon_col:
-            logger.error("Could not detect coordinate columns")
-            return None
-            
-        # Create layer group for points
-        layer_group = L.layerGroup()
-        # Need to add to map for proper initialization in pyqtlet2
-        layer_group.addTo(self.map)
-        
-        # Add points
-        points_added = 0
-        for idx, row in layer.data.iterrows():
+            logger.error(f"Could not detect coordinate columns for layer '{layer.name}'")
+            return False
+
+        # Convert DataFrame to GeoJSON FeatureCollection
+        features = []
+        for _, row in layer.data.iterrows():
             try:
                 lat = float(row[lat_col])
                 lon = float(row[lon_col])
-                
-                # Create popup content
-                popup_html = f"<b>Point {idx}</b><br>"
-                for col in layer.data.columns[:5]:  # Show first 5 columns
-                    popup_html += f"<b>{col}:</b> {row[col]}<br>"
-                if len(layer.data.columns) > 5:
-                    popup_html += f"<i>... and {len(layer.data.columns) - 5} more fields</i>"
-                
-                # Use Leaflet circleMarker for simple point visualization
-                marker_style = {
-                    'radius': layer.style.point_size,
-                    'color': layer.style.point_color,
-                    'weight': 1,
-                    'opacity': layer.style.point_opacity,
-                    'fillColor': layer.style.point_color,
-                    'fillOpacity': layer.style.point_opacity
+                properties = row.to_dict()
+
+                # Ensure all properties are JSON serializable
+                for key, value in properties.items():
+                    if pd.isna(value):
+                        properties[key] = None
+                    elif isinstance(value, (datetime, pd.Timestamp)):
+                        properties[key] = value.isoformat()
+
+                feature = {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [lon, lat]
+                    },
+                    "properties": properties
                 }
-                marker = L.circleMarker([lat, lon], marker_style)
-                # Add a label to the marker (show index or a label field if available)
-                label_text = None
-                if layer.style.show_labels and layer.style.label_field and layer.style.label_field in row:
-                    label_text = str(row[layer.style.label_field])
-                else:
-                    label_text = f"{layer.name} #{idx}"
-                marker.bindTooltip(label_text, {"permanent": False, "direction": "top"})
-                marker.bindPopup(popup_html)
-                marker.addTo(layer_group)
-                
-                points_added += 1
-                
+                features.append(feature)
             except (ValueError, TypeError) as e:
-                logger.warning(f"Skipping invalid coordinates at row {idx}: {e}")
-                continue  # Skip invalid coordinates
-                
-        logger.info(f"Added {points_added} points to layer '{layer.name}'")
-        
-        # Update layer bounds if not set
-        if not layer.bounds and points_added > 0:
-            lats = layer.data[lat_col].dropna()
-            lons = layer.data[lon_col].dropna()
-            layer.bounds = [
-                float(lons.min()), float(lats.min()),
-                float(lons.max()), float(lats.max())
-            ]
+                logger.warning(f"Skipping invalid coordinates in layer '{layer.name}': {e}")
+                continue
+
+        if not features:
+            logger.warning(f"No valid points could be processed for layer '{layer.name}'")
+            return False
+
+        geojson_data_str = json.dumps({
+            "type": "FeatureCollection",
+            "features": features
+        })
+
+        # We can't serialize functions in JSON, so we build the options object in JS
+        style = layer.style
+        layer_name_js = json.dumps(layer.name)
+        point_to_layer_func = f"""
+            function(feature, latlng) {{
+                return L.circleMarker(latlng, {{
+                    radius: {style.point_size},
+                    color: '{style.point_color}',
+                    weight: 1,
+                    opacity: {style.point_opacity},
+                    fillColor: '{style.point_color}',
+                    fillOpacity: {style.point_opacity}
+                }});
+            }}
+        """
+        on_each_feature_func = f"""
+            function(feature, layer) {{
+                if (feature.properties) {{
+                    var popupContent = '<div style="max-height: 200px; overflow-y: auto;"><table>';
+                    for (var p in feature.properties) {{
+                        popupContent += '<tr><td style="padding-right: 10px;"><strong>' + p + '</strong></td><td>' + feature.properties[p] + '</td></tr>';
+                    }}
+                    popupContent += '</table></div>';
+                    layer.bindPopup(popupContent);
+                }}
+            }}
+        """
+
+        js_code = f"""
+            var geojsonData = {geojson_data_str};
+            var options = {{
+                pointToLayer: {point_to_layer_func},
+                onEachFeature: {on_each_feature_func}
+            }};
+            var geoJsonLayer = L.geoJson(geojsonData, options);
+            window.uxoMapLayers[{layer_name_js}] = geoJsonLayer;
+        """
+
+        self.map_widget.page.runJavaScript(js_code)
+        logger.info(f"Created and stored GeoJSON layer for '{layer.name}'")
+        return True
             
-        if points_added == 0:
-            logger.warning(f"No valid points could be added for layer '{layer.name}'")
-            return None
-            
-        return layer_group
-        
     def _create_raster_layer(self, layer: UXOLayer):
         """Create raster layer - placeholder for future implementation"""
-        logger.warning("Raster layer support not yet implemented")
-        return None
+        logger.warning(f"Raster layer support for '{layer.name}' not yet implemented. Skipping.")
+        return False
         
-    def _create_vector_layer(self, layer: UXOLayer):
-        """Create vector layer - placeholder for future implementation"""
-        logger.warning("Vector layer support not yet implemented")
-        return None
+    def _create_vector_layer_geojson(self, layer: UXOLayer):
+        """Create vector layer for flight paths from DataFrame using GeoJSON"""
+        if not isinstance(layer.data, pd.DataFrame):
+            logger.error(f"Vector layer '{layer.name}' requires DataFrame data, got {type(layer.data)}")
+            return False
+
+        lat_col, lon_col = self._detect_coordinate_columns(layer.data)
+        if not lat_col or not lon_col:
+            logger.error(f"Could not detect coordinate columns for vector layer '{layer.name}'")
+            return False
+
+        if 'line_id' not in layer.data.columns:
+            logger.error(f"'line_id' column is required for vector line layers like '{layer.name}'")
+            return False
+
+        features = []
+        for line_id, group in layer.data.groupby('line_id'):
+            coords = group[[lon_col, lat_col]].values.tolist()
+            if len(coords) < 2:
+                continue
+
+            feature = {
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": coords
+                },
+                "properties": {
+                    "line_id": line_id
+                }
+            }
+            features.append(feature)
+
+        if not features:
+            logger.warning(f"No valid lines could be processed for layer '{layer.name}'")
+            return False
+
+        geojson_data_str = json.dumps({
+            "type": "FeatureCollection",
+            "features": features
+        })
+        
+        style = layer.style
+        layer_name_js = json.dumps(layer.name)
+        js_code = f"""
+            var geojsonData = {geojson_data_str};
+            var options = {{
+                style: {{
+                    color: '{style.line_color}',
+                    weight: {style.line_width},
+                    opacity: {style.line_opacity}
+                }}
+            }};
+            var geoJsonLayer = L.geoJson(geojsonData, options);
+            window.uxoMapLayers[{layer_name_js}] = geoJsonLayer;
+        """
+
+        self.map_widget.page.runJavaScript(js_code)
+        
+        logger.info(f"Created GeoJSON layer for '{layer.name}' with {len(features)} lines via runJavaScript")
+        return True
         
     def _detect_coordinate_columns(self, data: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
         """Auto-detect latitude and longitude columns"""
@@ -359,74 +431,56 @@ class UXOMapWidget(QWidget):
         return lat_col, lon_col
         
     def _on_layer_removed(self, layer_name: str):
-        """Handle layer removal"""
-        if layer_name in self.leaflet_layers:
-            try:
-                # Remove from map
-                self.map.removeLayer(self.leaflet_layers[layer_name])
-                
-                # Remove reference
-                del self.leaflet_layers[layer_name]
-                
-                logger.info(f"Removed layer '{layer_name}' from map")
-                
-            except Exception as e:
-                logger.error(f"Failed to remove layer '{layer_name}': {e}")
+        """Handle layer removal from the JS context"""
+        try:
+            layer_name_js = json.dumps(layer_name)
+            self.map_widget.page.runJavaScript(f"removeUxoLayer({layer_name_js});")
+            logger.info(f"Removed layer '{layer_name}'")
+        except Exception as e:
+            logger.error(f"Failed to handle layer removal '{layer_name}': {e}")
                 
     def _on_layer_visibility_changed(self, layer_name: str, is_visible: bool):
         """Handle layer visibility change"""
         try:
-            layer = self.layer_manager.get_layer(layer_name)
-            if not layer:
-                logger.warning(f"Layer '{layer_name}' not found in layer manager")
-                return
-                
+            layer_name_js = json.dumps(layer_name)
             if is_visible:
-                # Show layer - create it if it doesn't exist
-                if layer_name not in self.leaflet_layers:
-                    # Create the leaflet layer
-                    leaflet_layer = self._create_leaflet_layer(layer)
-                    if leaflet_layer:
-                        self.leaflet_layers[layer_name] = leaflet_layer
-                        logger.debug(f"Created and added layer '{layer_name}' to map")
-                    else:
-                        logger.error(f"Failed to create leaflet layer for '{layer_name}'")
-                else:
-                    logger.debug(f"Layer '{layer_name}' already exists on map")
+                # If a layer is made visible, it might not have been created in JS yet
+                # (e.g., if it was added while a filter was active).
+                # The safest approach is to ensure it exists before trying to show it.
+                layer = self.layer_manager.get_layer(layer_name)
+                if layer:
+                    self._create_leaflet_layer(layer)
+                    self.map_widget.page.runJavaScript(f"showUxoLayer({layer_name_js});")
+                    logger.debug(f"Layer '{layer_name}' made visible")
             else:
-                # Hide layer - remove it completely
-                if layer_name in self.leaflet_layers:
-                    try:
-                        self.map.removeLayer(self.leaflet_layers[layer_name])
-                        del self.leaflet_layers[layer_name]
-                        logger.debug(f"Removed layer '{layer_name}' from map")
-                    except Exception as e:
-                        logger.error(f"Error removing layer '{layer_name}': {e}")
-                        # Try to clean up anyway
-                        if layer_name in self.leaflet_layers:
-                            del self.leaflet_layers[layer_name]
-
-            logger.debug(f"Layer '{layer_name}' visibility set to {is_visible}")
-
+                self.map_widget.page.runJavaScript(f"hideUxoLayer({layer_name_js});")
+                logger.debug(f"Layer '{layer_name}' hidden from map")
         except Exception as e:
             logger.error(f"Failed to change visibility for layer '{layer_name}': {e}")
+            import traceback
+            logger.debug(f"Full traceback: {traceback.format_exc()}")
             
     def _on_layer_style_changed(self, layer_name: str, new_style: LayerStyle):
-        """Handle layer style change"""
-        # For now, recreate the layer with new style
+        """Handle layer style change by recreating the layer"""
         layer = self.layer_manager.get_layer(layer_name)
         if layer:
+            was_visible = layer.is_visible
+            # Re-adding the layer will apply the new style.
+            # It will be hidden initially, then shown if it was visible before.
             self._on_layer_removed(layer_name)
             self._on_layer_added(layer)
-            
+            if was_visible:
+                self._on_layer_visibility_changed(layer_name, True)
+
     def _on_layer_opacity_changed(self, layer_name: str, new_opacity: float):
         """Handle layer opacity change"""
-        # For now, recreate the layer with new opacity
+        # This is more complex with GeoJSON layers.
+        # A better approach would be to use setStyle on the leaflet layer.
         layer = self.layer_manager.get_layer(layer_name)
         if layer:
-            self._on_layer_removed(layer_name)
             layer.style.point_opacity = new_opacity
-            self._on_layer_added(layer)
+            layer.style.line_opacity = new_opacity
+            self._on_layer_style_changed(layer_name, layer.style)
             
     def center_default(self):
         """Center map on default location (Tarva island)"""
@@ -453,7 +507,7 @@ class UXOMapWidget(QWidget):
             ne = [layer.bounds[3], layer.bounds[2]]
             self.map.fitBounds([sw, ne])
             logger.info(f"Zoomed to layer '{layer_name}'")
-            
+        
     def toggle_measure(self, checked):
         """Toggle measurement tool"""
         if checked:
@@ -668,3 +722,32 @@ class UXOMapWidget(QWidget):
             )
         except Exception as e:
             logger.warning(f"Failed to invalidate map size: {e}")
+
+    def _init_js_layer_manager(self):
+        """Initializes the JavaScript object that will manage all our layers."""
+        map_js_name = self.map.jsName
+        js_init_script = f"""
+        window.uxoMapLayers = {{}};
+        var uxoMap = {map_js_name};
+
+        function showUxoLayer(layerName) {{
+            if (window.uxoMapLayers[layerName] && uxoMap) {{
+                window.uxoMapLayers[layerName].addTo(uxoMap);
+            }}
+        }}
+
+        function hideUxoLayer(layerName) {{
+            if (window.uxoMapLayers[layerName] && uxoMap) {{
+                uxoMap.removeLayer(window.uxoMapLayers[layerName]);
+            }}
+        }}
+
+        function removeUxoLayer(layerName) {{
+            if (window.uxoMapLayers[layerName] && uxoMap) {{
+                uxoMap.removeLayer(window.uxoMapLayers[layerName]);
+                delete window.uxoMapLayers[layerName];
+            }}
+        }}
+        """
+        self.map_widget.page.runJavaScript(js_init_script)
+        logger.info("JavaScript layer manager initialized.")
