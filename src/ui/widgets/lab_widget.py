@@ -11,7 +11,7 @@ from qtpy.QtWidgets import (
     QFileSystemModel, QMenu, QMessageBox, QToolButton, QFrame, QSplitter,
     QTextEdit, QTabWidget, QStackedWidget
 )
-from qtpy.QtCore import Qt, QDir, QFileInfo, Signal, QModelIndex, QTimer
+from qtpy.QtCore import Qt, QDir, QFileInfo, Signal, QModelIndex, QTimer, QSettings
 from qtpy.QtGui import QFont, QIcon, QDesktopServices
 from loguru import logger
 
@@ -25,13 +25,26 @@ class LabWidget(QWidget):
     
     def __init__(self, project_root: str = None):
         super().__init__()
-        self.project_root = project_root or os.getcwd()
+        self.settings = QSettings("UXO-Wizard", "Desktop-Suite")
+        
+        # Initialize with provided project_root or restore from settings
+        if project_root:
+            self.project_root = project_root
+        else:
+            # Try to restore from settings (use same key as Project Explorer for sync)
+            self.project_root = self.settings.value("last_project_path", os.getcwd())
+            
         self.processed_path = os.path.join(self.project_root, "processed")
         self.has_processed_folder = False
         
         self.setup_ui()
-        self.check_processed_folder()
         self.apply_styling()
+        
+        # Restore last project after UI is set up (if no project_root was provided)
+        if not project_root:
+            self.restore_last_project()
+        else:
+            self.check_processed_folder()
         
         # Auto-refresh timer to check for processed folder
         self.refresh_timer = QTimer()
@@ -269,7 +282,8 @@ class LabWidget(QWidget):
             
         # Update status in placeholder
         if not processed_exists:
-            self.status_label.setText(f"Looking for: {self.processed_path}")
+            project_name = os.path.basename(self.project_root) if self.project_root else "Unknown"
+            self.status_label.setText(f"Looking for processed folder in project: {project_name}")
         
     def setup_file_model(self):
         """Setup the file system model"""
@@ -302,24 +316,32 @@ class LabWidget(QWidget):
         logger.info(f"Lab widget initialized for: {self.processed_path}")
         
     def on_file_click(self, index: QModelIndex):
-        """Handle file selection"""
+        """Handle file selection - show file info only"""
         file_path = self.file_model.filePath(index)
         file_info = QFileInfo(file_path)
         
         if file_info.isFile():
             self.show_file_info(file_path)
-            self.file_selected.emit(file_path)
+            # Don't emit signals on single click - just show info
             
     def on_file_double_click(self, index: QModelIndex):
-        """Handle file double-click"""
+        """Handle file double-click - open in data viewer or appropriate application"""
         file_path = self.file_model.filePath(index)
         file_info = QFileInfo(file_path)
         
         if file_info.isFile():
             self.open_file(file_path)
+            # Log the action for user feedback
+            filename = os.path.basename(file_path)
+            if file_path.endswith(('.csv', '.txt', '.dat', '.json')):
+                self.log_activity(f"Opened '{filename}' in data viewer")
+            elif file_path.endswith('.py'):
+                self.log_activity(f"Opened script '{filename}' for viewing")
+            else:
+                self.log_activity(f"Opened '{filename}' with system default")
             
     def show_file_info(self, file_path: str):
-        """Show information about the selected file"""
+        """Show information about the selected file including metadata"""
         file_info = QFileInfo(file_path)
         
         info_text = f"""
@@ -330,18 +352,225 @@ class LabWidget(QWidget):
 <b>Type:</b> {file_info.suffix() or 'Folder'}<br>
 """
         
+        # Add metadata based on file type
+        metadata = self.extract_file_metadata(file_path)
+        if metadata:
+            info_text += "<br><b>Metadata:</b><br>"
+            for key, value in metadata.items():
+                info_text += f"<b>{key}:</b> {value}<br>"
+        
         # Add specific info based on file type
         if file_path.endswith('.py'):
-            info_text += "<b>Type:</b> Python Script<br>"
-            info_text += "<i>Double-click to view or run</i>"
-        elif file_path.endswith(('.csv', '.txt', '.dat')):
-            info_text += "<b>Type:</b> Data File<br>"
-            info_text += "<i>Double-click to view in data viewer</i>"
+            info_text += "<br><i>💡 Double-click to view script</i>"
+        elif file_path.endswith(('.csv', '.txt', '.dat', '.json')):
+            info_text += "<br><i>📊 Double-click to open in data viewer</i>"
         elif file_path.endswith(('.png', '.jpg', '.tiff')):
-            info_text += "<b>Type:</b> Image File<br>"
-            info_text += "<i>Double-click to open</i>"
+            info_text += "<br><i>🖼️ Double-click to open image</i>"
+        else:
+            info_text += "<br><i>📄 Double-click to open file</i>"
             
         self.file_info.setHtml(info_text)
+        
+    def extract_file_metadata(self, file_path: str) -> dict:
+        """Extract metadata from different file types"""
+        metadata = {}
+        
+        try:
+            if file_path.endswith('.csv'):
+                metadata.update(self._extract_csv_metadata(file_path))
+            elif file_path.endswith('.json'):
+                metadata.update(self._extract_json_metadata(file_path))
+            elif file_path.endswith('.txt') or file_path.endswith('.dat'):
+                metadata.update(self._extract_text_metadata(file_path))
+            elif file_path.endswith('.py'):
+                metadata.update(self._extract_python_metadata(file_path))
+            elif file_path.endswith(('.png', '.jpg', '.jpeg', '.tiff')):
+                metadata.update(self._extract_image_metadata(file_path))
+                
+        except Exception as e:
+            logger.warning(f"Failed to extract metadata from {file_path}: {e}")
+            metadata["Error"] = "Could not read metadata"
+            
+        return metadata
+        
+    def _extract_csv_metadata(self, file_path: str) -> dict:
+        """Extract metadata from CSV files"""
+        import pandas as pd
+        metadata = {}
+        
+        try:
+            # Read just the header and a few rows for quick analysis
+            df = pd.read_csv(file_path, nrows=100)
+            metadata["Columns"] = len(df.columns)
+            metadata["Sample Rows"] = len(df)
+            
+            # Try to get total rows by reading the file more efficiently
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    total_rows = sum(1 for line in f) - 1  # Subtract header
+                metadata["Total Rows"] = f"{total_rows:,}"
+            except:
+                metadata["Total Rows"] = "Unknown"
+                
+            # Show first few column names
+            col_names = list(df.columns[:5])
+            if len(df.columns) > 5:
+                col_names.append("...")
+            metadata["Columns Names"] = ", ".join(col_names)
+            
+            # Detect numeric vs text columns
+            numeric_cols = len(df.select_dtypes(include=['number']).columns)
+            text_cols = len(df.select_dtypes(include=['object']).columns)
+            metadata["Numeric Cols"] = numeric_cols
+            metadata["Text Cols"] = text_cols
+            
+        except Exception as e:
+            metadata["Error"] = f"Could not parse CSV: {str(e)[:50]}..."
+            
+        return metadata
+        
+    def _extract_json_metadata(self, file_path: str) -> dict:
+        """Extract metadata from JSON files"""
+        import json
+        metadata = {}
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            if isinstance(data, dict):
+                metadata["Type"] = "Object"
+                metadata["Keys"] = len(data.keys())
+                # Show first few keys
+                key_names = list(data.keys())[:5]
+                if len(data.keys()) > 5:
+                    key_names.append("...")
+                metadata["Key Names"] = ", ".join(key_names)
+            elif isinstance(data, list):
+                metadata["Type"] = "Array"
+                metadata["Items"] = len(data)
+                if data and isinstance(data[0], dict):
+                    metadata["Item Type"] = "Objects"
+                    if data:
+                        metadata["Object Keys"] = len(data[0].keys())
+                else:
+                    metadata["Item Type"] = "Values"
+                    
+        except Exception as e:
+            metadata["Error"] = f"Could not parse JSON: {str(e)[:50]}..."
+            
+        return metadata
+        
+    def _extract_text_metadata(self, file_path: str) -> dict:
+        """Extract metadata from text/dat files"""
+        metadata = {}
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                
+            metadata["Lines"] = len(lines)
+            
+            # Try to detect if it's structured data
+            if lines:
+                first_line = lines[0].strip()
+                # Check if it might be delimited data
+                for delimiter in [',', '\t', ';', '|']:
+                    if delimiter in first_line:
+                        parts = first_line.split(delimiter)
+                        if len(parts) > 1:
+                            metadata["Possible Format"] = f"Delimited ({delimiter})"
+                            metadata["Columns"] = len(parts)
+                            break
+                            
+                # Check for numbers in first line (might be numeric data)
+                import re
+                numbers = re.findall(r'-?\d+\.?\d*', first_line)
+                if len(numbers) > 2:
+                    metadata["Numeric Data"] = "Likely"
+                    
+        except UnicodeDecodeError:
+            try:
+                # Try binary mode to get basic info
+                with open(file_path, 'rb') as f:
+                    content = f.read(1024)  # Read first 1KB
+                metadata["Format"] = "Binary data"
+                metadata["Sample Size"] = "1KB preview"
+            except:
+                metadata["Error"] = "Could not read file"
+        except Exception as e:
+            metadata["Error"] = f"Read error: {str(e)[:50]}..."
+            
+        return metadata
+        
+    def _extract_python_metadata(self, file_path: str) -> dict:
+        """Extract metadata from Python files"""
+        import ast
+        metadata = {}
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                lines = content.split('\n')
+                
+            metadata["Lines"] = len(lines)
+            
+            # Try to parse AST for more details
+            try:
+                tree = ast.parse(content)
+                
+                functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+                classes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
+                imports = [node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
+                
+                metadata["Functions"] = len(functions)
+                metadata["Classes"] = len(classes)
+                metadata["Imports"] = len(imports)
+                
+                if functions:
+                    func_names = [f.name for f in functions[:3]]
+                    if len(functions) > 3:
+                        func_names.append("...")
+                    metadata["Function Names"] = ", ".join(func_names)
+                    
+            except SyntaxError:
+                metadata["Status"] = "Syntax errors present"
+            except Exception:
+                metadata["Status"] = "Basic text file"
+                
+        except Exception as e:
+            metadata["Error"] = f"Could not parse: {str(e)[:50]}..."
+            
+        return metadata
+        
+    def _extract_image_metadata(self, file_path: str) -> dict:
+        """Extract metadata from image files"""
+        metadata = {}
+        
+        try:
+            # Try using PIL if available
+            try:
+                from PIL import Image
+                with Image.open(file_path) as img:
+                    metadata["Dimensions"] = f"{img.width} × {img.height}"
+                    metadata["Mode"] = img.mode
+                    metadata["Format"] = img.format
+                    
+                    # Try to get EXIF data
+                    if hasattr(img, '_getexif') and img._getexif():
+                        exif = img._getexif()
+                        if exif:
+                            metadata["EXIF Data"] = "Available"
+                    
+            except ImportError:
+                # Fallback: just basic file info
+                metadata["Type"] = "Image file"
+                metadata["Note"] = "Install PIL for detailed info"
+                
+        except Exception as e:
+            metadata["Error"] = f"Could not read image: {str(e)[:50]}..."
+            
+        return metadata
         
     def format_file_size(self, size: int) -> str:
         """Format file size in human readable format"""
@@ -386,17 +615,24 @@ class LabWidget(QWidget):
         
         if file_info.isFile():
             # File actions
-            open_action = menu.addAction("📖 Open")
+            if file_path.endswith(('.csv', '.txt', '.dat', '.json')):
+                open_action = menu.addAction("📊 Open in Data Viewer")
+            elif file_path.endswith('.py'):
+                open_action = menu.addAction("💡 View Script")
+            elif file_path.endswith(('.png', '.jpg', '.tiff')):
+                open_action = menu.addAction("🖼️ Open Image")
+            else:
+                open_action = menu.addAction("📄 Open File")
             open_action.triggered.connect(lambda: self.open_file(file_path))
             
             menu.addSeparator()
             
             if file_path.endswith('.py'):
-                run_action = menu.addAction("▶️ Run Script")
+                run_action = menu.addAction("▶️ Execute Script")
                 run_action.triggered.connect(lambda: self.script_executed.emit(file_path))
                 
             if file_path.endswith(('.csv', '.txt', '.dat', '.json')):
-                view_action = menu.addAction("📊 View Data")
+                view_action = menu.addAction("📋 Quick View Data")
                 view_action.triggered.connect(lambda: self.file_selected.emit(file_path))
                 
             menu.addSeparator()
@@ -530,26 +766,53 @@ class LabWidget(QWidget):
         
     def set_project_root(self, project_root: str):
         """Update the project root path"""
-        self.project_root = project_root
-        self.processed_path = os.path.join(project_root, "processed")
-        self.has_processed_folder = False
-        
-        # Reset to placeholder view and check for processed folder
-        self.stacked_widget.setCurrentWidget(self.placeholder_widget)
-        self.path_label.setText("Waiting for processed data...")
-        self.info_label.setText("No processed data")
-        
-        # Disable toolbar buttons
-        self.open_folder_btn.setEnabled(False)
-        self.clear_btn.setEnabled(False)
-        
-        # Check if processed folder exists in new project
-        self.check_processed_folder()
-        
-        if self.has_processed_folder:
-            self.log_activity(f"Switched to project: {os.path.basename(project_root)}")
+        if project_root and os.path.exists(project_root):
+            self.project_root = project_root
+            self.processed_path = os.path.join(project_root, "processed")
+            self.has_processed_folder = False
+            
+            # Save project path to settings (sync with Project Explorer)
+            self.settings.setValue("last_project_path", project_root)
+            
+            # Reset to placeholder view and check for processed folder
+            self.stacked_widget.setCurrentWidget(self.placeholder_widget)
+            self.path_label.setText("Waiting for processed data...")
+            self.info_label.setText("No processed data")
+            
+            # Disable toolbar buttons
+            self.open_folder_btn.setEnabled(False)
+            self.clear_btn.setEnabled(False)
+            
+            # Check if processed folder exists in new project
+            self.check_processed_folder()
+            
+            if self.has_processed_folder:
+                self.log_activity(f"Switched to project: {os.path.basename(project_root)}")
+            else:
+                logger.info(f"Switched to project: {os.path.basename(project_root)} (no processed folder yet)")
         else:
-            logger.info(f"Switched to project: {os.path.basename(project_root)} (no processed folder yet)")
+            logger.warning(f"Invalid project root path: {project_root}")
+            
+    def restore_last_project(self):
+        """Restore the last opened project from settings"""
+        last_project_path = self.settings.value("last_project_path")
+        
+        if last_project_path and os.path.exists(last_project_path):
+            logger.info(f"Lab widget restoring last project: {last_project_path}")
+            # Don't call set_project_root to avoid saving again, just update directly
+            self.project_root = last_project_path
+            self.processed_path = os.path.join(last_project_path, "processed")
+            self.check_processed_folder()
+            
+            if self.has_processed_folder:
+                self.log_activity(f"Restored project: {os.path.basename(last_project_path)}")
+        else:
+            if last_project_path:
+                logger.warning(f"Lab widget: last project path no longer exists: {last_project_path}")
+                # Clean up invalid path from settings
+                self.settings.remove("last_project_path")
+            # Keep placeholder view for invalid/missing projects
+            logger.info("Lab widget: showing placeholder - no valid project to restore")
             
     def apply_styling(self):
         """Apply dark theme styling"""

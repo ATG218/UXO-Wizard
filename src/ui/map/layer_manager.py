@@ -16,6 +16,7 @@ class LayerManager(QObject):
     layer_removed = Signal(str)  # layer_name
     layer_visibility_changed = Signal(str, bool)  # layer_name, is_visible
     layer_style_changed = Signal(str, LayerStyle)  # layer_name, new_style
+    layer_opacity_changed = Signal(str, float)  # layer_name, opacity
     layer_selected = Signal(str)  # layer_name
     layer_order_changed = Signal(list)  # ordered layer names
     layer_bounds_changed = Signal(list)  # [min_x, min_y, max_x, max_y]
@@ -143,6 +144,20 @@ class LayerManager(QObject):
         layer.style = style
         self.layer_style_changed.emit(layer_name, style)
         logger.debug(f"Updated style for layer '{layer_name}'")
+        return True
+        
+    def set_layer_opacity(self, layer_name: str, opacity: float) -> bool:
+        """Set layer opacity"""
+        if layer_name not in self.layers:
+            logger.warning(f"Layer '{layer_name}' not found")
+            return False
+            
+        layer = self.layers[layer_name]
+        if layer.opacity != opacity:
+            layer.opacity = opacity
+            self.layer_opacity_changed.emit(layer_name, opacity)
+            logger.debug(f"Set layer '{layer_name}' opacity to {opacity}")
+            
         return True
         
     def reorder_layers(self, layer_names: List[str]) -> bool:
