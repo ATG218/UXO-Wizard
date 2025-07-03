@@ -189,7 +189,6 @@ class ModernLayerControlPanel(QWidget):
         self.current_layer = None
         
         self.setup_ui()
-        self.setup_styling()
         self.connect_signals()
         
     def setup_ui(self):
@@ -295,121 +294,6 @@ class ModernLayerControlPanel(QWidget):
         controls_layout.addWidget(opacity_group)
         
         layout.addWidget(controls)
-        
-    def setup_styling(self):
-        """Apply modern dark theme styling to match the application"""
-        self.setStyleSheet("""
-            ModernLayerControlPanel {
-                background-color: #2b2b2b;
-                border: 1px solid #3c3c3c;
-            }
-            
-            QFrame {
-                background-color: #2b2b2b;
-                border: none;
-            }
-            
-            QLabel {
-                color: #e0e0e0;
-                background: transparent;
-            }
-            
-            QToolButton {
-                background-color: #3c3c3c;
-                color: #e0e0e0;
-                border: 1px solid #4a4a4a;
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 12px;
-                padding: 2px;
-            }
-            
-            QToolButton:hover {
-                background-color: #4a4a4a;
-                border-color: #0d7377;
-            }
-            
-            QToolButton:pressed {
-                background-color: #0d7377;
-            }
-            
-            QScrollArea {
-                background-color: #333333;
-                border: 1px solid #3c3c3c;
-                border-radius: 4px;
-            }
-            
-            QGroupBox {
-                font-weight: bold;
-                color: #e0e0e0;
-                border: 1px solid #4a4a4a;
-                border-radius: 4px;
-                margin-top: 8px;
-                padding-top: 4px;
-                background-color: #2b2b2b;
-            }
-            
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 8px;
-                padding: 0 4px 0 4px;
-                color: #ffffff;
-            }
-            
-            QSlider::groove:horizontal {
-                height: 6px;
-                background-color: #4a4a4a;
-                border-radius: 3px;
-            }
-            
-            QSlider::handle:horizontal {
-                background-color: #0d7377;
-                width: 16px;
-                height: 16px;
-                margin: -5px 0;
-                border-radius: 8px;
-                border: none;
-            }
-            
-            QSlider::handle:horizontal:hover {
-                background-color: #14ffec;
-            }
-            
-            QSlider::sub-page:horizontal {
-                background-color: #0d7377;
-                border-radius: 3px;
-            }
-            
-            LayerItemWidget {
-                background-color: #404040;
-                border: 1px solid #4a4a4a;
-                border-radius: 4px;
-                margin: 1px;
-            }
-            
-            LayerItemWidget:hover {
-                background-color: #4a4a4a;
-                border-color: #0d7377;
-            }
-            
-            QCheckBox::indicator {
-                width: 14px;
-                height: 14px;
-                border-radius: 2px;
-                border: 1px solid #6a6a6a;
-                background-color: #333333;
-            }
-            
-            QCheckBox::indicator:checked {
-                background-color: #0d7377;
-                border-color: #0d7377;
-                image: url(data:image/svg+xml;charset=utf-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23fff' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m1 7 4 4 10-10'/%3e%3c/svg%3e);
-            }
-            
-            QCheckBox::indicator:hover {
-                border-color: #0d7377;
-            }
-        """)
         
     def connect_signals(self):
         """Connect layer manager signals"""

@@ -934,8 +934,28 @@ class DataViewer(QWidget):
         self.tab_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tab_widget.customContextMenuRequested.connect(self.show_tab_context_menu)
         
+        # Placeholder for when no tabs are open
+        self.placeholder = QWidget()
+        placeholder_layout = QVBoxLayout()
+        placeholder_layout.setAlignment(Qt.AlignCenter)
+
+        label = QLabel("No data files open")
+        label.setAlignment(Qt.AlignCenter)
+        label.setStyleSheet("color: gray; font-size: 14px;")
+
+        help_label = QLabel("Open a new data file from the File Explorer")
+        help_label.setAlignment(Qt.AlignCenter)
+        help_label.setStyleSheet("color: gray; font-size: 12px;")
+
+        placeholder_layout.addWidget(label)
+        placeholder_layout.addWidget(help_label)
+        self.placeholder.setLayout(placeholder_layout)
+        
         layout.addWidget(self.tab_widget)
+        layout.addWidget(self.placeholder)
         self.setLayout(layout)
+        
+        self.update_ui_state()
         
     def add_empty_tab(self):
         """Add an empty data viewer tab"""
@@ -983,10 +1003,8 @@ class DataViewer(QWidget):
         new_tab_action.triggered.connect(self.open_new_tab)
         menu.addAction(new_tab_action)
         
-        # Only show close option if we have actual data tabs (not welcome tab)
-        current_tab = self.get_current_tab()
-        has_data_tabs = (self.tab_widget.count() > 0 and 
-                        isinstance(current_tab, DataViewerTab))
+        # Only show close option if we have actual data tabs
+        has_data_tabs = self.tab_widget.count() > 0
         
         if has_data_tabs:
             menu.addSeparator()
@@ -1044,30 +1062,8 @@ class DataViewer(QWidget):
         """Update UI state based on current tabs"""
         has_tabs = self.tab_widget.count() > 0
         
-        # Show helpful message when no tabs are open
-        if not has_tabs:
-            placeholder = QWidget()
-            layout = QVBoxLayout()
-            layout.setAlignment(Qt.AlignCenter)
-            
-            label = QLabel("No data files open")
-            label.setAlignment(Qt.AlignCenter)
-            label.setStyleSheet("color: gray; font-size: 14px;")
-            
-            help_label = QLabel("Right-click here to open a new data file")
-            help_label.setAlignment(Qt.AlignCenter)
-            help_label.setStyleSheet("color: gray; font-size: 12px;")
-            
-            layout.addWidget(label)
-            layout.addWidget(help_label)
-            placeholder.setLayout(layout)
-            
-            self.tab_widget.addTab(placeholder, "Welcome")
-            # Make this tab not closable by temporarily disabling closable tabs
-            self.tab_widget.setTabsClosable(False)
-        else:
-            # Re-enable closable tabs when we have real data tabs
-            self.tab_widget.setTabsClosable(True)
+        self.tab_widget.setVisible(has_tabs)
+        self.placeholder.setVisible(not has_tabs)
             
     def get_current_tab(self) -> Optional[DataViewerTab]:
         """Get the currently active tab"""
@@ -1080,14 +1076,7 @@ class DataViewer(QWidget):
         """Load data into current tab or create new tab"""
         current_tab = self.get_current_tab()
         
-        # Check if we have a welcome tab (placeholder) - replace it
-        if (self.tab_widget.count() == 1 and 
-            self.tab_widget.tabText(0) == "Welcome" and
-            not isinstance(current_tab, DataViewerTab)):
-            # Remove welcome tab and create new data tab
-            self.tab_widget.removeTab(0)
-            self.add_file_tab(filepath)
-        elif current_tab and isinstance(current_tab, DataViewerTab) and current_tab.get_current_dataframe().empty:
+        if current_tab and isinstance(current_tab, DataViewerTab) and current_tab.get_current_dataframe().empty:
             # Use current empty data tab
             current_tab.load_data(filepath)
         else:

@@ -38,7 +38,6 @@ class LabWidget(QWidget):
         self.has_processed_folder = False
         
         self.setup_ui()
-        self.apply_styling()
         
         # Restore last project after UI is set up (if no project_root was provided)
         if not project_root:
@@ -208,6 +207,7 @@ class LabWidget(QWidget):
         self.tree_view.setAlternatingRowColors(True)
         self.tree_view.setSelectionMode(QTreeView.SingleSelection)
         self.tree_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree_view.setSortingEnabled(True)
         
         # Connect signals
         self.tree_view.doubleClicked.connect(self.on_file_double_click)
@@ -309,6 +309,9 @@ class LabWidget(QWidget):
         self.tree_view.setColumnWidth(1, 80)   # Size
         self.tree_view.setColumnWidth(2, 100)  # Type
         self.tree_view.setColumnWidth(3, 120)  # Date Modified
+        
+        # Sort by date modified by default
+        self.tree_view.sortByColumn(3, Qt.DescendingOrder)
         
         # Update path label
         self.path_label.setText(f"📁 {os.path.basename(self.processed_path)}")
@@ -812,102 +815,4 @@ class LabWidget(QWidget):
                 # Clean up invalid path from settings
                 self.settings.remove("last_project_path")
             # Keep placeholder view for invalid/missing projects
-            logger.info("Lab widget: showing placeholder - no valid project to restore")
-            
-    def apply_styling(self):
-        """Apply dark theme styling"""
-        self.setStyleSheet("""
-            LabWidget {
-                background-color: #2b2b2b;
-                border: 1px solid #3c3c3c;
-            }
-            
-            QFrame {
-                background-color: #2b2b2b;
-                border: none;
-                border-bottom: 1px solid #3c3c3c;
-            }
-            
-            QLabel {
-                color: #ffffff;
-                background: transparent;
-            }
-            
-            QToolButton {
-                background-color: #3c3c3c;
-                color: #ffffff;
-                border: 1px solid #4a4a4a;
-                border-radius: 3px;
-                padding: 2px;
-                font-size: 11px;
-            }
-            
-            QToolButton:hover {
-                background-color: #4a4a4a;
-                border: 1px solid #0d7377;
-            }
-            
-            QToolButton:pressed {
-                background-color: #0d7377;
-            }
-            
-            QTreeView {
-                background-color: #2b2b2b;
-                color: #ffffff;
-                border: 1px solid #3c3c3c;
-                outline: none;
-                selection-background-color: #0d7377;
-            }
-            
-            QTreeView::item {
-                height: 22px;
-                border: none;
-                padding: 1px;
-                color: #ffffff;
-            }
-            
-            QTreeView::item:selected {
-                background-color: #0d7377;
-            }
-            
-            QTreeView::item:hover {
-                background-color: #3c3c3c;
-            }
-            
-            QTreeView::branch:has-siblings:!adjoins-item {
-                border-image: none;
-            }
-            
-            QTextEdit {
-                background-color: #1e1e1e;
-                color: #ffffff;
-                border: 1px solid #3c3c3c;
-                font-family: 'Courier New', monospace;
-                font-size: 11px;
-            }
-            
-            QTabWidget::pane {
-                border: 1px solid #3c3c3c;
-                background-color: #2b2b2b;
-            }
-            
-            QTabWidget::tab-bar {
-                alignment: left;
-            }
-            
-            QTabBar::tab {
-                background-color: #3c3c3c;
-                color: #ffffff;
-                border: 1px solid #4a4a4a;
-                padding: 4px 8px;
-                margin-right: 2px;
-            }
-            
-            QTabBar::tab:selected {
-                background-color: #0d7377;
-            }
-            
-            QTabBar::tab:hover {
-                background-color: #4a4a4a;
-            }
-        """) 
+            logger.info("Lab widget: showing placeholder - no valid project to restore") 
