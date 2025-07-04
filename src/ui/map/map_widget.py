@@ -25,6 +25,8 @@ import pandas as pd
 import numpy as np
 from loguru import logger
 import json
+import base64
+from io import BytesIO
 from datetime import datetime
 
 from .layer_types import UXOLayer, LayerType, GeometryType, LayerStyle
@@ -245,7 +247,7 @@ class UXOMapWidget(QWidget):
         Creates and stores a leaflet layer in the JavaScript context.
         Returns True on success, False on failure.
         """
-        if layer.layer_type in [LayerType.POINTS, LayerType.ANNOTATION, LayerType.PROCESSED] and layer.geometry_type == GeometryType.POINT:
+        if layer.layer_type in [LayerType.POINTS, LayerType.ANNOTATION] and layer.geometry_type == GeometryType.POINT:
             return self._create_point_layer_geojson(layer)
         elif layer.layer_type == LayerType.RASTER:
             return self._create_raster_layer(layer)
@@ -346,9 +348,155 @@ class UXOMapWidget(QWidget):
         return True
             
     def _create_raster_layer(self, layer: UXOLayer):
-        """Create raster layer - placeholder for future implementation"""
-        logger.warning(f"Raster layer support for '{layer.name}' not yet implemented. Skipping.")
-        return False
+        """Create raster layer with gradient heatmap from numpy array data"""
+        try:
+            logger.info(f"Creating raster layer: {layer.name}")
+            
+            # Extract numpy array from data
+            data = layer.data
+            if isinstance(data, dict) and 'grid' in data:
+                grid_array = data['grid']
+            elif isinstance(data, np.ndarray):
+                grid_array = data
+            else:
+                logger.error(f"Raster layer '{layer.name}' requires numpy array or dict with 'grid' key, got {type(data)}")
+                return False
+            
+            if not isinstance(grid_array, np.ndarray):
+                logger.error(f"Grid data must be numpy array, got {type(grid_array)}")
+                return False
+            
+            # Get bounds
+            if not layer.bounds:
+                logger.error(f"Raster layer '{layer.name}' requires bounds")
+                return False
+            
+            # Create gradient heatmap image
+            image_data_url = self._array_to_heatmap_image(grid_array, layer.name)
+            if not image_data_url:
+                logger.error(f"Failed to create heatmap image for '{layer.name}'")
+                return False
+            
+            # Convert bounds to Leaflet format [[south, west], [north, east]]
+            bounds = layer.bounds  # [min_x, min_y, max_x, max_y]
+            leaflet_bounds = [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
+            
+            # Create JavaScript code for ImageOverlay
+            layer_name_js = json.dumps(layer.name)
+            opacity = layer.opacity if hasattr(layer, 'opacity') else 0.7
+            
+            js_code = f"""
+                var imageUrl = '{image_data_url}';
+                var imageBounds = {json.dumps(leaflet_bounds)};
+                var imageOverlay = L.imageOverlay(imageUrl, imageBounds, {{
+                    opacity: {opacity},
+                    interactive: true
+                }});
+                
+                // Add popup with layer info
+                imageOverlay.bindPopup('<b>{layer.name}</b><br/>Raster Layer<br/>Size: {grid_array.shape[0]}x{grid_array.shape[1]}<br/>Data range: {np.min(grid_array):.2f} - {np.max(grid_array):.2f}');
+                
+                window.uxoMapLayers[{layer_name_js}] = imageOverlay;
+            """
+            
+            self.map_widget.page.runJavaScript(js_code)
+            logger.info(f"Created raster layer '{layer.name}' with {grid_array.shape} grid")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error creating raster layer '{layer.name}': {e}")
+            import traceback
+            logger.debug(f"Full traceback: {traceback.format_exc()}")
+            return False
+    
+    def _array_to_heatmap_image(self, array: np.ndarray, layer_name: str) -> str:
+        """Convert numpy array to base64 encoded heatmap image"""
+        try:
+            # Normalize array to 0-1 range
+            array_min = np.nanmin(array)
+            array_max = np.nanmax(array)
+            if array_max == array_min:
+                normalized = np.zeros_like(array)
+            else:
+                normalized = (array - array_min) / (array_max - array_min)
+            
+            # Replace NaN with 0 and ensure valid range
+            normalized = np.nan_to_num(normalized, nan=0.0)
+            normalized = np.clip(normalized, 0.0, 1.0)
+            
+            # Create gradient heatmap using matplotlib-style colormap
+            colored_array = self._apply_heatmap_colormap(normalized)
+            
+            # Convert to PIL Image
+            try:
+                from PIL import Image
+            except ImportError:
+                logger.error("PIL (Pillow) not available. Installing is required for raster layers.")
+                return None
+            
+            # Convert RGBA array to PIL Image
+            # Flip vertically to match geographic convention (north-up)
+            image_array = np.flipud(colored_array)
+            image = Image.fromarray((image_array * 255).astype(np.uint8), mode='RGBA')
+            
+            # Convert to base64 data URL
+            buffer = BytesIO()
+            image.save(buffer, format='PNG')
+            buffer.seek(0)
+            
+            # Create data URL
+            img_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            data_url = f"data:image/png;base64,{img_data}"
+            
+            logger.debug(f"Created heatmap image for '{layer_name}': {array.shape} -> {image.size}")
+            return data_url
+            
+        except Exception as e:
+            logger.error(f"Error converting array to heatmap image: {e}")
+            return None
+    
+    def _apply_heatmap_colormap(self, normalized_array: np.ndarray) -> np.ndarray:
+        """Apply gradient heatmap colormap to normalized array (0-1 range)"""
+        # Create a gradient heatmap: blue -> cyan -> green -> yellow -> red
+        height, width = normalized_array.shape
+        colored = np.zeros((height, width, 4), dtype=np.float32)  # RGBA
+        
+        # Define color stops (value, R, G, B, A)
+        color_stops = [
+            (0.0, 0.0, 0.0, 0.5, 0.8),    # Dark blue with transparency
+            (0.25, 0.0, 0.5, 1.0, 0.9),   # Cyan
+            (0.5, 0.0, 1.0, 0.0, 0.9),    # Green  
+            (0.75, 1.0, 1.0, 0.0, 0.9),   # Yellow
+            (1.0, 1.0, 0.0, 0.0, 1.0),    # Red
+        ]
+        
+        for i in range(height):
+            for j in range(width):
+                value = normalized_array[i, j]
+                
+                # Find appropriate color stops
+                if value <= color_stops[0][0]:
+                    # Below first stop
+                    colored[i, j] = color_stops[0][1:5]
+                elif value >= color_stops[-1][0]:
+                    # Above last stop
+                    colored[i, j] = color_stops[-1][1:5]
+                else:
+                    # Interpolate between stops
+                    for k in range(len(color_stops) - 1):
+                        if color_stops[k][0] <= value <= color_stops[k + 1][0]:
+                            # Linear interpolation
+                            t = (value - color_stops[k][0]) / (color_stops[k + 1][0] - color_stops[k][0])
+                            
+                            r = color_stops[k][1] + t * (color_stops[k + 1][1] - color_stops[k][1])
+                            g = color_stops[k][2] + t * (color_stops[k + 1][2] - color_stops[k][2])
+                            b = color_stops[k][3] + t * (color_stops[k + 1][3] - color_stops[k][3])
+                            a = color_stops[k][4] + t * (color_stops[k + 1][4] - color_stops[k][4])
+                            
+                            colored[i, j] = [r, g, b, a]
+                            break
+        
+        return colored
         
     def _create_vector_layer_geojson(self, layer: UXOLayer):
         """Create vector layer for flight paths from DataFrame using GeoJSON"""

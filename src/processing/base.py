@@ -598,11 +598,11 @@ class BaseProcessor(ABC):
             'vector': LayerType.VECTOR,
             'flight_lines': LayerType.VECTOR,
             'flight_path': LayerType.VECTOR,
-            'processed': LayerType.PROCESSED,
+            'processed': LayerType.POINTS,  # Processed data is still point data
             'annotation': LayerType.ANNOTATION
         }
         
-        uxo_layer_type = layer_type_mapping.get(layer_type, LayerType.PROCESSED)
+        uxo_layer_type = layer_type_mapping.get(layer_type, LayerType.POINTS)
         
         # Generate appropriate styling
         style = self._generate_layer_style(data, layer_type, style_overrides)

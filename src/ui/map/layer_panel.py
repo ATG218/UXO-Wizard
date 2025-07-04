@@ -134,12 +134,21 @@ class LayerItemWidget(QWidget):
         self.visibility_changed.emit(self.layer.name, new_visibility)
             
     def _get_layer_color(self) -> QColor:
-        """Get color for layer type"""
+        """Get color for layer type and source"""
+        # Check if this is processed data - style by source and metadata instead of type
+        if self.layer.source.value == "processing":
+            # Different colors for different types of processing results
+            data_type = self.layer.metadata.get('data_type', '').lower()
+            if 'anomaly' in data_type or 'anomalies' in data_type:
+                return QColor(231, 76, 60)   # Red for anomalies
+            else:
+                return QColor(230, 126, 34)  # Orange for other processed data
+        
+        # Standard colors for layer types
         colors = {
             LayerType.POINTS: QColor(52, 152, 219),      # Blue
             LayerType.RASTER: QColor(46, 204, 113),      # Green
             LayerType.VECTOR: QColor(155, 89, 182),      # Purple
-            LayerType.PROCESSED: QColor(230, 126, 34),   # Orange
             LayerType.ANNOTATION: QColor(231, 76, 60),   # Red
         }
         return colors.get(self.layer.layer_type, QColor(149, 165, 166))

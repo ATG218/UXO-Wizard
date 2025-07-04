@@ -14,7 +14,6 @@ class LayerType(Enum):
     POINTS = "points"
     RASTER = "raster"
     VECTOR = "vector"
-    PROCESSED = "processed"
     ANNOTATION = "annotation"
 
 
