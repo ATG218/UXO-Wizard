@@ -998,32 +998,103 @@ class FlightPathSegmenter(ScriptInterface):
         
         from loguru import logger
         
-        # DISABLE LAYER CREATION TO TEST IF THIS IS THE SOURCE OF THE BUG
-        logger.info("Layer creation disabled for testing - bug investigation")
-        return
+        # 1. Add original flight path as a vector layer
+        logger.info("Creating original flight path vector layer")
+        # Sort by timestamp to ensure proper chronological order and avoid jitter
+        df_sorted = df.sort_values('Timestamp [ms]').copy()
+        original_flight_df = df_sorted[['Latitude [Decimal Degrees]', 'Longitude [Decimal Degrees]']].copy()
+        original_flight_df = original_flight_df.rename(columns={
+            'Latitude [Decimal Degrees]': 'latitude',
+            'Longitude [Decimal Degrees]': 'longitude'
+        })
         
-        # # DRASTICALLY limit data to test - sample only every 100th point
-        # sample_rate = max(1, len(df) // 100)  # Max 100 points total
-        # sampled_df = df.iloc[::sample_rate].copy()
+        # Add required line_id column for vector rendering
+        original_flight_df['line_id'] = 0  # Single line for the complete flight path
+        original_flight_df['segment_name'] = 'Original Flight'
         
-        # logger.info(f"Sampled {len(sampled_df)} points from {len(df)} total")
+        # Reset index to ensure clean line rendering
+        original_flight_df = original_flight_df.reset_index(drop=True)
         
-        # # Test with minimal data - just ONE simple layer
-        # result.add_layer_output(
-        #     layer_type="points",
-        #     data=sampled_df[['Latitude [Decimal Degrees]', 'Longitude [Decimal Degrees]']].head(50),  # Max 50 points
-        #     style_info={
-        #         'color': '#FF0000',
-        #         'size': 5, 
-        #         'opacity': 1.0
-        #     },
-        #     metadata={
-        #         'description': 'Test flight path sample',
-        #         'layer_name': 'Test Layer'
-        #     }
-        # )
+        result.add_layer_output(
+            layer_type="flight_path",
+            data=original_flight_df,
+            style_info={
+                'line_color': '#666666',
+                'line_width': 1,
+                'line_opacity': 0.7,
+                'line_style': 'solid'
+            },
+            metadata={
+                'description': 'Complete original flight path',
+                'layer_name': 'Original Flight Path',
+                'total_points': len(original_flight_df)
+            }
+        )
         
-        # logger.info("Created 1 test layer with 50 points max")
+        # 2. Add each heading direction as separate vector layers
+        logger.info(f"Creating {len(segments)} heading direction layers")
+        for direction, seg_lines in segments.items():
+            if not seg_lines:
+                continue
+                
+            # Combine all parallel lines for this heading direction
+            combined_lines = []
+            total_points = 0
+            
+            for i, segment_df in enumerate(seg_lines):
+                if segment_df.empty:
+                    continue
+                
+                # Sort the segment by timestamp to ensure proper chronological order
+                segment_df_sorted = segment_df.sort_values('Timestamp [ms]').copy()
+                    
+                # Create line data for this segment
+                line_df = segment_df_sorted[['Latitude [Decimal Degrees]', 'Longitude [Decimal Degrees]']].copy()
+                line_df = line_df.rename(columns={
+                    'Latitude [Decimal Degrees]': 'latitude',
+                    'Longitude [Decimal Degrees]': 'longitude'
+                })
+                
+                # Add line identifier for multi-line rendering (each parallel line gets unique ID)
+                line_df['line_id'] = i
+                line_df['segment_name'] = direction
+                
+                # Reset index to ensure clean line rendering
+                line_df = line_df.reset_index(drop=True)
+                
+                combined_lines.append(line_df)
+                total_points += len(line_df)
+            
+            if combined_lines:
+                # Combine all lines for this direction
+                direction_df = pd.concat(combined_lines, ignore_index=True)
+                
+                # Create distinct colors for each direction
+                colors = ['#FF6600', '#0066CC', '#00CC66', '#CC0066', '#CCCC00', '#CC6600']
+                direction_index = list(segments.keys()).index(direction)
+                color = colors[direction_index % len(colors)]
+                
+                result.add_layer_output(
+                    layer_type="flight_lines",
+                    data=direction_df,
+                    style_info={
+                        'line_color': color,
+                        'line_width': 2,
+                        'line_opacity': 0.9,
+                        'line_style': 'solid',
+                        'show_labels': True,
+                        'label_field': 'segment_name'
+                    },
+                    metadata={
+                        'description': f'Flight lines for {direction}',
+                        'layer_name': f'Flight Lines - {direction}',
+                        'parallel_lines': len(seg_lines),
+                        'total_points': total_points,
+                        'direction': direction
+                    }
+                )
+        
+        logger.info(f"Created {len(segments) + 1} vector layers for flight path visualization")
 
 
 # Export the script class for discovery

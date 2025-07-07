@@ -439,6 +439,13 @@ class UXOMapWidget(QWidget):
             image_array = np.flipud(colored_array)
             image = Image.fromarray((image_array * 255).astype(np.uint8), mode='RGBA')
             
+            # Resize for smoother interpolation if the grid is small
+            if image.size[0] < 512 or image.size[1] < 512:
+                # Scale up with bilinear interpolation for smoother appearance
+                scale_factor = max(512 // image.size[0], 512 // image.size[1], 1)
+                new_size = (image.size[0] * scale_factor, image.size[1] * scale_factor)
+                image = image.resize(new_size, Image.Resampling.BILINEAR)
+            
             # Convert to base64 data URL
             buffer = BytesIO()
             image.save(buffer, format='PNG')
@@ -456,18 +463,19 @@ class UXOMapWidget(QWidget):
             return None
     
     def _apply_heatmap_colormap(self, normalized_array: np.ndarray) -> np.ndarray:
-        """Apply gradient heatmap colormap to normalized array (0-1 range)"""
-        # Create a gradient heatmap: blue -> cyan -> green -> yellow -> red
+        """Apply viridis-like colormap to normalized array (0-1 range)"""
+        # Create a viridis-like gradient: dark purple -> blue -> green -> yellow
         height, width = normalized_array.shape
         colored = np.zeros((height, width, 4), dtype=np.float32)  # RGBA
         
-        # Define color stops (value, R, G, B, A)
+        # Define viridis-like color stops (value, R, G, B, A)
         color_stops = [
-            (0.0, 0.0, 0.0, 0.5, 0.8),    # Dark blue with transparency
-            (0.25, 0.0, 0.5, 1.0, 0.9),   # Cyan
-            (0.5, 0.0, 1.0, 0.0, 0.9),    # Green  
-            (0.75, 1.0, 1.0, 0.0, 0.9),   # Yellow
-            (1.0, 1.0, 0.0, 0.0, 1.0),    # Red
+            (0.0, 0.267, 0.004, 0.329, 0.9),   # Dark purple
+            (0.2, 0.282, 0.140, 0.457, 0.9),   # Purple-blue
+            (0.4, 0.253, 0.265, 0.529, 0.9),   # Blue
+            (0.6, 0.163, 0.471, 0.558, 0.9),   # Blue-green
+            (0.8, 0.477, 0.741, 0.408, 0.9),   # Green-yellow
+            (1.0, 0.993, 0.906, 0.144, 0.9),   # Bright yellow
         ]
         
         for i in range(height):

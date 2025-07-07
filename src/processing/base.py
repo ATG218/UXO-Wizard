@@ -713,7 +713,7 @@ class BaseProcessor(ABC):
         
         style_overrides.update({
             'use_graduated_colors': True,
-            'opacity': 0.7
+            'fill_opacity': 0.7
         })
         
         return self.create_layer(
@@ -811,7 +811,6 @@ class BaseProcessor(ABC):
             return LayerStyle(
                 use_graduated_colors=True,
                 color_ramp=["#000080", "#0000FF", "#00FFFF", "#00FF00", "#FFFF00", "#FF8000", "#FF0000"],
-                opacity=0.7,
                 fill_opacity=0.8
             )
         elif layer_type in ['flight_lines', 'flight_path']:
@@ -847,7 +846,7 @@ class BaseProcessor(ABC):
         if layer_type in ['points', 'point_data']:
             return LayerStyle(point_color="#666666", point_size=4)
         elif layer_type in ['raster', 'grid_visualization']:
-            return LayerStyle(use_graduated_colors=True, opacity=0.7)
+            return LayerStyle(use_graduated_colors=True, fill_opacity=0.7)
         elif layer_type in ['flight_lines', 'vector']:
             return LayerStyle(line_color="#333333", line_width=2)
         
@@ -855,6 +854,10 @@ class BaseProcessor(ABC):
     
     def _calculate_layer_bounds(self, data: Any, geometry_type: GeometryType) -> Optional[List[float]]:
         """Calculate spatial bounds for Norwegian UTM zones"""
+        # Handle raster data (dict with bounds)
+        if isinstance(data, dict) and 'bounds' in data:
+            return data['bounds']
+        
         if isinstance(data, pd.DataFrame):
             coord_info = self.detect_columns(data)
             lat_col = coord_info.get('latitude')
