@@ -41,13 +41,17 @@ class MainWindow(QMainWindow):
         self.setup_statusbar()
         self.setup_connections()
         
-        self.restore_state()
+        # Restore state or apply default layout if no state exists
+        if not self.restore_state():
+            logger.info("No saved state found, applying default UI layout.")
+            QTimer.singleShot(50, self.apply_default_layout)
+        
         logger.info("UXO Wizard Desktop Suite initialized")
         
     def setup_ui(self):
         """Initialize the main UI structure"""
-        self.setWindowTitle("UXO Wizard Desktop Suite - Advanced")
-        self.setGeometry(50, 50, 1600, 1000)  # Larger for advanced map features
+        self.setWindowTitle("UXO Wizard Desktop Suite")
+        self.setGeometry(50, 50, 1600, 1000)
         
         # Central widget with tab system
         self.central_tabs = QTabWidget()
@@ -182,6 +186,13 @@ class MainWindow(QMainWindow):
         self.about_action.triggered.connect(self.show_about)
         help_menu.addAction(self.about_action)
         
+        # Debug Menu (for development/testing)
+        self.debug_menu = menubar.addMenu("&Debug")
+        self.reset_layout_action = QAction("Reset UI Layout", self)
+        self.reset_layout_action.triggered.connect(self.reset_ui_layout)
+        self.debug_menu.addAction(self.reset_layout_action)
+
+        
     def setup_toolbars(self):
         """Create the toolbar system"""
         # Main toolbar
@@ -244,13 +255,13 @@ class MainWindow(QMainWindow):
         self.console_dock.setObjectName("ConsoleDock")
         self.console_widget = ConsoleWidget()
         self.console_dock.setWidget(self.console_widget)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.console_dock)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.console_dock)
 
-        # Advanced Map Dock (right side, tabify with console)
-        self.map_dock = QDockWidget("Advanced Map", self)
+        #Map Dock (right side, tabify with console)
+        self.map_dock = QDockWidget("Map", self)
         self.map_dock.setObjectName("AdvancedMapDock")
         self.map_dock.setWidget(self.map_widget)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.map_dock)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.map_dock)
         
         # Data Viewer Dock (bottom, spanning full width)
         self.data_dock = QDockWidget("Data Viewer", self)
@@ -275,11 +286,19 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.console_dock, self.map_dock)
         self.map_dock.raise_()  # Map on top by default
         
-        # Configure corners and force layout after a brief delay
-        QTimer.singleShot(50, self._setup_dock_layout)
-        
-    def _setup_dock_layout(self):
+    def apply_default_layout(self):
         """Set up dock layout with proper proportions"""
+        # Force docks back to their original areas. This is the key to a reliable layout reset.
+        # This ensures that if a dock was moved or floated, it gets put back in its place.
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.project_dock)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.layers_dock)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.console_dock)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.data_dock)
+        
+        # These docks must be added to the same area as the one they tabify with
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.map_dock)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.lab_dock)
+
         # Configure corners so bottom dock spans full width
         self.setCorner(Qt.BottomLeftCorner, Qt.BottomDockWidgetArea)
         self.setCorner(Qt.BottomRightCorner, Qt.BottomDockWidgetArea)
@@ -292,23 +311,31 @@ class MainWindow(QMainWindow):
         # Separate the Project Explorer from the Layers/Lab pane with a horizontal split
         self.splitDockWidget(self.project_dock, self.layers_dock, Qt.Horizontal)
         
+        # Split the Layers/Lab pane from the Map/Console pane to fill the central gap
+        self.splitDockWidget(self.layers_dock, self.console_dock, Qt.Horizontal)
+
         # Re-tabify Layers and Lab in case the split operation disturbed their tab relationship
         self.tabifyDockWidget(self.layers_dock, self.lab_dock)
         self.layers_dock.raise_()  # Ensure Layers tab is shown on top
         
+        # Re-tabify Console and Map to ensure they are grouped correctly after a reset
+        self.tabifyDockWidget(self.console_dock, self.map_dock)
+        self.map_dock.raise_()  # Map on top by default
+        
         # Set horizontal proportions: File Explorer | Layers/Lab | Map/Console
-        self.resizeDocks([self.project_dock, self.layers_dock, self.console_dock], [180, 250, 450], Qt.Horizontal)
+        self.resizeDocks([self.project_dock, self.layers_dock, self.console_dock], [180, 250, 1000], Qt.Horizontal)
         
         # Set vertical proportion for bottom data viewer
         self.resizeDocks([self.data_dock], [200], Qt.Vertical)
         
-        # Add dock toggles to View menu
-        self.dock_menu.addAction(self.project_dock.toggleViewAction())
-        self.dock_menu.addAction(self.layers_dock.toggleViewAction())
-        self.dock_menu.addAction(self.lab_dock.toggleViewAction())
-        self.dock_menu.addAction(self.console_dock.toggleViewAction())
-        self.dock_menu.addAction(self.map_dock.toggleViewAction())
-        self.dock_menu.addAction(self.data_dock.toggleViewAction())
+        # Add dock toggles to View menu, ensuring not to add duplicates
+        if not self.dock_menu.actions():
+            self.dock_menu.addAction(self.project_dock.toggleViewAction())
+            self.dock_menu.addAction(self.layers_dock.toggleViewAction())
+            self.dock_menu.addAction(self.lab_dock.toggleViewAction())
+            self.dock_menu.addAction(self.console_dock.toggleViewAction())
+            self.dock_menu.addAction(self.map_dock.toggleViewAction())
+            self.dock_menu.addAction(self.data_dock.toggleViewAction())
         
         # Ensure all docks are visible and properly arranged
         self.project_dock.show()
@@ -403,7 +430,7 @@ class MainWindow(QMainWindow):
         if project_path:
             # Project opened
             folder_name = project_path.split('/')[-1]
-            self.setWindowTitle(f"UXO Wizard Desktop Suite - Advanced - {folder_name}")
+            self.setWindowTitle(f"UXO Wizard Desktop Suite - {folder_name}")
             
             # Update lab widget to point to new project's processing folder
             self.project_root = project_path
@@ -413,7 +440,7 @@ class MainWindow(QMainWindow):
             self.project_manager.set_current_working_directory(project_path)
         else:
             # Project closed
-            self.setWindowTitle("UXO Wizard Desktop Suite - Advanced")
+            self.setWindowTitle("UXO Wizard Desktop Suite")
             self.project_manager.set_current_working_directory(None)
             
     def on_map_coordinates_clicked(self, lat, lon):
@@ -816,14 +843,17 @@ class MainWindow(QMainWindow):
             logger.error(f"Error restoring working directory: {e}")
         
     def restore_state(self):
-        """Restore window state from settings"""
+        """Restore window state from settings. Returns True if state was restored."""
         geometry = self.settings.value("geometry")
-        if geometry:
-            self.restoreGeometry(geometry)
-            
         state = self.settings.value("windowState")
-        if state:
+
+        if geometry and state:
+            self.restoreGeometry(geometry)
             self.restoreState(state)
+            logger.info("Restored window layout from settings.")
+            return True
+            
+        return False
             
     def closeEvent(self, event):
         """Save state before closing"""
@@ -864,6 +894,24 @@ class MainWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
+
+    def reset_ui_layout(self):
+        """Force-apply the default dock layout."""
+        logger.info("Resetting UI layout to default.")
+        
+        # Show all docks in case some were hidden
+        for dock in [self.project_dock, self.layers_dock, self.lab_dock, 
+                     self.console_dock, self.map_dock, self.data_dock]:
+            dock.show()
+        
+        # We call the internal setup method which handles splitting and sizing
+        self.apply_default_layout()
+        
+        QMessageBox.information(
+            self, 
+            "Layout Reset", 
+            "The user interface layout has been reset to its default configuration."
+        )
 
 
 def main():
