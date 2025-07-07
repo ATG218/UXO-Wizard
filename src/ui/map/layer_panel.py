@@ -30,7 +30,9 @@ class LayerItemWidget(QWidget):
     def __init__(self, layer: UXOLayer):
         super().__init__()
         self.layer = layer
+        self.setAutoFillBackground(True)
         self.setup_ui()
+        self.set_selected(False)  # Initial state
         
     def setup_ui(self):
         """Create modern layer item UI"""
@@ -54,7 +56,6 @@ class LayerItemWidget(QWidget):
         self.name_label = QLabel(self.layer.name)
         name_font = QFont()
         name_font.setPointSize(9)
-        name_font.setBold(True)
         self.name_label.setFont(name_font)
         info_layout.addWidget(self.name_label)
         
@@ -71,10 +72,10 @@ class LayerItemWidget(QWidget):
         layout.addStretch()
         
         # Opacity indicator
-        if self.layer.opacity < 1.0:
-            opacity_label = QLabel(f"{int(self.layer.opacity * 100)}%")
-            opacity_label.setStyleSheet("color: #999999; font-size: 8px;")
-            layout.addWidget(opacity_label)
+        self.opacity_label = QLabel()
+        self.opacity_label.setStyleSheet("color: #999999; font-size: 8px;")
+        layout.addWidget(self.opacity_label)
+        self.update_opacity_display()
         
         self.setLayout(layout)
         self.setMinimumHeight(40)
@@ -174,11 +175,34 @@ class LayerItemWidget(QWidget):
         """Handle double click"""
         self.layer_double_clicked.emit(self.layer.name)
         
-    def update_opacity(self, opacity: float):
-        """Update opacity display"""
-        self.layer.opacity = opacity
-        # Trigger UI refresh
-        self.setup_ui()
+    def update_opacity_display(self):
+        """Update opacity display label"""
+        if self.layer.opacity < 1.0:
+            self.opacity_label.setText(f"{int(self.layer.opacity * 100)}%")
+            self.opacity_label.show()
+        else:
+            self.opacity_label.hide()
+
+    def set_selected(self, is_selected: bool):
+        """Set visual state for selection"""
+        self.is_selected = is_selected
+        
+        # Update name label font
+        font = self.name_label.font()
+        font.setBold(is_selected)
+        self.name_label.setFont(font)
+        
+        # Trigger a repaint to draw the selection bar
+        self.update()
+
+    def paintEvent(self, event):
+        """Override paint event to draw a selection bar"""
+        super().paintEvent(event)
+        if self.is_selected:
+            painter = QPainter(self)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor("#3498db"))  # Bright blue
+            painter.drawRect(0, 0, 4, self.height())
 
 
 class ModernLayerControlPanel(QWidget):
@@ -280,8 +304,8 @@ class ModernLayerControlPanel(QWidget):
         controls_layout.setSpacing(8)
         
         # Opacity control
-        opacity_group = QGroupBox("Layer Opacity")
-        opacity_layout = QVBoxLayout(opacity_group)
+        self.opacity_group = QGroupBox("Layer Opacity")
+        opacity_layout = QVBoxLayout(self.opacity_group)
         opacity_layout.setContentsMargins(8, 8, 8, 8)
         
         # Opacity slider with label
@@ -300,7 +324,10 @@ class ModernLayerControlPanel(QWidget):
         slider_layout.addWidget(self.opacity_label)
         
         opacity_layout.addLayout(slider_layout)
-        controls_layout.addWidget(opacity_group)
+        controls_layout.addWidget(self.opacity_group)
+        
+        # Hide opacity controls by default
+        self.opacity_group.setVisible(False)
         
         layout.addWidget(controls)
         
@@ -345,9 +372,7 @@ class ModernLayerControlPanel(QWidget):
             # Clear selection if this was selected
             if self.current_layer == layer_name:
                 self.current_layer = None
-                self.opacity_slider.setEnabled(False)
-                self.opacity_label.setText("--")
-                self.remove_btn.setEnabled(False)
+                self._update_controls_for_selection()
                 
             logger.debug(f"Removed layer widget for '{layer_name}'")
             
@@ -376,49 +401,61 @@ class ModernLayerControlPanel(QWidget):
         self.visibility_changed.emit(layer_name, is_visible)
         
     def _on_layer_selected(self, layer_name: str):
-        """Handle layer selection"""
-        self.current_layer = layer_name
-        self.layer_selected.emit(layer_name)
-        self.remove_btn.setEnabled(True)
+        """Handle layer selection and deselection."""
+        # If the clicked layer is already selected, deselect it. Otherwise, select the new one.
+        if self.current_layer == layer_name:
+            self.current_layer = None
+        else:
+            self.current_layer = layer_name
         
-        # Update opacity slider
-        layer = self.layer_manager.get_layer(layer_name)
-        if layer:
-            self.opacity_slider.setEnabled(True)
-            opacity_value = int(layer.opacity * 100)
-            self.opacity_slider.setValue(opacity_value)
-            self.opacity_label.setText(f"{opacity_value}%")
-            
-        # Visual feedback
+        self._update_controls_for_selection()
+        
+        # Emit signal only when a layer is actually selected
+        if self.current_layer:
+            self.layer_selected.emit(self.current_layer)
+
+    def _update_controls_for_selection(self):
+        """Update all UI controls based on the current selection state."""
+        # Update visual state for all layer widgets
         for name, widget in self.layer_widgets.items():
-            if name == layer_name:
-                widget.setStyleSheet("""
-                    LayerItemWidget {
-                        background-color: #1a4f52;
-                        border: 2px solid #0d7377;
-                    }
-                """)
-            else:
-                widget.setStyleSheet("")
-                
+            widget.set_selected(name == self.current_layer)
+        
+        is_layer_selected = self.current_layer is not None
+        
+        # Update controls visibility and state
+        self.opacity_group.setVisible(is_layer_selected)
+        self.remove_btn.setEnabled(is_layer_selected)
+        self.opacity_slider.setEnabled(is_layer_selected)
+        
+        if is_layer_selected:
+            layer = self.layer_manager.get_layer(self.current_layer)
+            if layer:
+                opacity_value = int(layer.opacity * 100)
+                # Block signals to prevent feedback loops when setting value
+                self.opacity_slider.blockSignals(True)
+                self.opacity_slider.setValue(opacity_value)
+                self.opacity_slider.blockSignals(False)
+                self.opacity_label.setText(f"{opacity_value}%")
+        else:
+            self.opacity_label.setText("--")
+
     def _on_opacity_changed(self, value: int):
         """Handle opacity slider change"""
         opacity = value / 100.0
         self.opacity_label.setText(f"{value}%")
         
         if self.current_layer:
-            # Update layer manager (this will emit the signal)
+            # The layer manager will emit the signal that the map widget is listening to.
             self.layer_manager.set_layer_opacity(self.current_layer, opacity)
             
-            # Update widget display
+            # Update widget display efficiently
             if self.current_layer in self.layer_widgets:
-                self.layer_widgets[self.current_layer].update_opacity(opacity)
-                    
-            # Emit signal for map update
-            self.opacity_changed.emit(self.current_layer, opacity)
+                widget = self.layer_widgets[self.current_layer]
+                widget.layer.opacity = opacity
+                widget.update_opacity_display()
                     
     def _show_context_menu(self, position, layer_name: str, widget: LayerItemWidget):
-        """Show context menu for layer"""
+        """Show context menu for a layer"""
         menu = QMenu(self)
         
         # Zoom to layer

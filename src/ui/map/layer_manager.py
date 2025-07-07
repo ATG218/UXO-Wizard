@@ -147,14 +147,31 @@ class LayerManager(QObject):
         return True
         
     def set_layer_opacity(self, layer_name: str, opacity: float) -> bool:
-        """Set layer opacity"""
+        """Set layer opacity and ensure style properties are consistent."""
         if layer_name not in self.layers:
             logger.warning(f"Layer '{layer_name}' not found")
             return False
             
         layer = self.layers[layer_name]
-        if layer.opacity != opacity:
+        
+        # Ensure opacity is clamped between 0.0 and 1.0
+        opacity = max(0.0, min(1.0, opacity))
+
+        # Check if a change is needed to avoid redundant updates
+        if abs(layer.opacity - opacity) > 0.001:
             layer.opacity = opacity
+            
+            # Also update style opacities to keep the data model consistent.
+            # This is critical for when layers are recreated (e.g., on visibility toggle).
+            if hasattr(layer.style, 'point_opacity'):
+                layer.style.point_opacity = opacity
+            if hasattr(layer.style, 'line_opacity'):
+                layer.style.line_opacity = opacity
+            if hasattr(layer.style, 'fill_opacity'):
+                # Use a factor for fill, consistent with the JS implementation
+                layer.style.fill_opacity = opacity * 0.8 
+
+            # Notify listeners that the opacity has changed
             self.layer_opacity_changed.emit(layer_name, opacity)
             logger.debug(f"Set layer '{layer_name}' opacity to {opacity}")
             

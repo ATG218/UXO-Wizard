@@ -624,13 +624,12 @@ class UXOMapWidget(QWidget):
 
     def _on_layer_opacity_changed(self, layer_name: str, new_opacity: float):
         """Handle layer opacity change"""
-        # This is more complex with GeoJSON layers.
-        # A better approach would be to use setStyle on the leaflet layer.
-        layer = self.layer_manager.get_layer(layer_name)
-        if layer:
-            layer.style.point_opacity = new_opacity
-            layer.style.line_opacity = new_opacity
-            self._on_layer_style_changed(layer_name, layer.style)
+        try:
+            layer_name_js = json.dumps(layer_name)
+            self.map_widget.page.runJavaScript(f"setUxoLayerOpacity({layer_name_js}, {new_opacity});")
+            logger.debug(f"Set opacity for layer '{layer_name}' to {new_opacity}")
+        except Exception as e:
+            logger.error(f"Failed to change opacity for layer '{layer_name}': {e}")
             
     def center_default(self):
         """Center map on default location (Tarva island)"""
@@ -874,36 +873,95 @@ class UXOMapWidget(QWidget):
             logger.warning(f"Failed to invalidate map size: {e}")
 
     def _init_js_layer_manager(self):
-        """Initializes the JavaScript object that will manage all our layers."""
-        map_js_name = self.map.jsName
-        js_init_script = f"""
-        window.uxoMapLayers = {{}};
-        var uxoMap = {map_js_name};
-
-        function showUxoLayer(layerName) {{
-            if (window.uxoMapLayers[layerName] && uxoMap) {{
-                window.uxoMapLayers[layerName].addTo(uxoMap);
-            }}
-        }}
-
-        function hideUxoLayer(layerName) {{
-            if (window.uxoMapLayers[layerName] && uxoMap) {{
-                uxoMap.removeLayer(window.uxoMapLayers[layerName]);
-            }}
-        }}
-
-        function removeUxoLayer(layerName) {{
-            if (window.uxoMapLayers[layerName] && uxoMap) {{
-                uxoMap.removeLayer(window.uxoMapLayers[layerName]);
-                delete window.uxoMapLayers[layerName];
-            }}
-        }}
+        """Initialize JavaScript layer management objects and functions"""
+        js_code = """
+            // Global store for all created Leaflet layers
+            if (!window.uxoMapLayers) {
+                window.uxoMapLayers = {};
+            }
+            
+            // Layer group on the map to manage visibility
+            if (!window.uxoMapLayerGroup) {
+                window.uxoMapLayerGroup = L.layerGroup().addTo(map);
+            }
+            
+            // --- Core Layer Functions ---
+            
+            function showUxoLayer(layerName) {
+                if (window.uxoMapLayers[layerName]) {
+                    if (!window.uxoMapLayerGroup.hasLayer(window.uxoMapLayers[layerName])) {
+                        window.uxoMapLayerGroup.addLayer(window.uxoMapLayers[layerName]);
+                        console.log('Showing layer:', layerName);
+                    }
+                } else {
+                    console.warn('Cannot show layer - not found:', layerName);
+                }
+            }
+            
+            function hideUxoLayer(layerName) {
+                if (window.uxoMapLayers[layerName]) {
+                    if (window.uxoMapLayerGroup.hasLayer(window.uxoMapLayers[layerName])) {
+                        window.uxoMapLayerGroup.removeLayer(window.uxoMapLayers[layerName]);
+                        console.log('Hiding layer:', layerName);
+                    }
+                } else {
+                    console.warn('Cannot hide layer - not found:', layerName);
+                }
+            }
+            
+            function removeUxoLayer(layerName) {
+                hideUxoLayer(layerName);
+                if (window.uxoMapLayers[layerName]) {
+                    delete window.uxoMapLayers[layerName];
+                    console.log('Removed layer from store:', layerName);
+                }
+            }
+            
+            function setUxoLayerOpacity(layerName, opacity) {
+                if (window.uxoMapLayers[layerName]) {
+                    const layer = window.uxoMapLayers[layerName];
+                    
+                    // For layers with a setOpacity method (ImageOverlay, TileLayer)
+                    if (typeof layer.setOpacity === 'function') {
+                        layer.setOpacity(opacity);
+                    } 
+                    // For vector layers (GeoJSON)
+                    else if (typeof layer.setStyle === 'function') {
+                        layer.setStyle({
+                            opacity: opacity,
+                            fillOpacity: opacity * 0.8 // Adjust fill opacity relative to main opacity
+                        });
+                    }
+                    // For individual markers that don't have a group setStyle
+                    else if (layer.eachLayer) {
+                         layer.eachLayer(function(subLayer) {
+                            if (typeof subLayer.setOpacity === 'function') {
+                                subLayer.setOpacity(opacity);
+                                if (typeof subLayer.setStyle === 'function') {
+                                     subLayer.setStyle({ fillOpacity: opacity * 0.8 });
+                                }
+                            } else if (typeof subLayer.setStyle === 'function') {
+                                subLayer.setStyle({
+                                    opacity: opacity,
+                                    fillOpacity: opacity * 0.8
+                                });
+                            }
+                        });
+                    }
+                     else {
+                        console.warn('Layer does not support opacity change:', layerName, layer);
+                    }
+                    console.log(`Set opacity for ${layerName} to ${opacity}`);
+                } else {
+                    console.warn('Cannot set opacity - layer not found:', layerName);
+                }
+            }
         """
-        self.map_widget.page.runJavaScript(js_init_script)
-        logger.info("JavaScript layer manager initialized.")
+        self.map_widget.page.runJavaScript(js_code)
+        logger.debug("JavaScript layer manager initialized")
 
     def zoom_to_visible_layers(self):
-        """Zoom to the extent of all currently visible data layers."""
+        """Zoom to the extent of all visible data layers"""
         bounds = self.layer_manager.get_visible_bounds()
         if bounds:
             # Convert to Leaflet bounds format: [[south, west], [north, east]]
