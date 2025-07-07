@@ -58,7 +58,7 @@ environment.yml.lock
 *.csv
 *.tif
 *.tiff
-*.png
+#*.png
 *.jpg
 *.jpeg
 *.gif

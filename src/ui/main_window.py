@@ -33,6 +33,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.theme_manager = ThemeManager()
         self.settings = QSettings("UXO-Wizard", "Desktop-Suite")
+        self.open_file_docks = {}
         
         self.setup_ui()
         self.setup_menus()
@@ -53,11 +54,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("UXO Wizard Desktop Suite")
         self.setGeometry(50, 50, 1600, 1000)
         
-        # Central widget with tab system
-        self.central_tabs = QTabWidget()
-        self.central_tabs.setTabsClosable(True)
-        self.central_tabs.setMovable(True)
-        self.setCentralWidget(self.central_tabs)
+        # Central widget is removed to allow docks to fill the entire window space
+        self.setDockNestingEnabled(True)
         
         # Apply initial theme
         self.theme_manager.apply_theme(self, "dark")
@@ -388,8 +386,7 @@ class MainWindow(QMainWindow):
         self.project_explorer.project_changed.connect(self.on_project_changed)
         self.project_explorer.open_project_requested.connect(self.open_project)
         
-        # Tab connections
-        self.central_tabs.tabCloseRequested.connect(self.close_tab)
+        # Tab connections are no longer needed as docks handle their own closing
         
         # Data viewer connections
         # NOTE: Map integration removed for clean processor architecture
@@ -473,29 +470,8 @@ class MainWindow(QMainWindow):
     
     def run_processing_script(self, script_path):
         """Handle execution of processing scripts from Lab widget"""
-        try:
-            # For now, just open the script in a text viewer
-            # In the future, this could execute the script or open it in a code editor
-            filename = script_path.split('/')[-1]
-            
-            # Check if already open in tabs
-            for i in range(self.central_tabs.count()):
-                if self.central_tabs.tabText(i) == filename:
-                    self.central_tabs.setCurrentIndex(i)
-                    return
-            
-            # Create text viewer for the script
-            widget = self.create_text_viewer(script_path)
-            self.central_tabs.addTab(widget, filename)
-            self.central_tabs.setCurrentIndex(self.central_tabs.count() - 1)
-            
-            # Update status
-            self.status_label.setText(f"Opened script: {filename}")
-            logger.info(f"Processing script opened: {script_path}")
-            
-        except Exception as e:
-            logger.error(f"Error opening script {script_path}: {str(e)}")
-            QMessageBox.critical(self, "Error", f"Failed to open script:\n{str(e)}")
+        # Open the script in the main tabbed viewing area
+        self.open_file(script_path)
         
     def new_project(self):
         """Create a new project"""
@@ -587,18 +563,16 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(f"Data loaded: {filename}")
                 logger.info(f"Data file loaded in bottom dock: {filepath}")
                 return
-            
-            # Handle other files - check if already open in tabs
-            for i in range(self.central_tabs.count()):
-                if self.central_tabs.tabText(i) == filename:
-                    self.central_tabs.setCurrentIndex(i)
-                    return
+
+            # Handle other files - check if already open in a dock
+            if filepath in self.open_file_docks:
+                self.open_file_docks[filepath].raise_()
+                return
             
             # Create appropriate viewer for non-data files
-            if filepath.lower().endswith(('.txt', '.dat', '.log')):
+            if filepath.lower().endswith(('.txt', '.dat', '.log', '.py', '.md')):
                 # Text file viewer
                 widget = self.create_text_viewer(filepath)
-                
             else:
                 # Default placeholder for unsupported files
                 widget = QWidget()
@@ -606,9 +580,20 @@ class MainWindow(QMainWindow):
                 layout.addWidget(QLabel(f"File: {filepath}\nFile type not supported for viewing"))
                 widget.setLayout(layout)
             
-            # Add non-data files to central tabs
-            self.central_tabs.addTab(widget, filename)
-            self.central_tabs.setCurrentIndex(self.central_tabs.count() - 1)
+            # Create a new dock for the file viewer
+            dock = QDockWidget(filename, self)
+            dock.setObjectName(f"FileDock_{filename}")
+            dock.setWidget(widget)
+            dock.setAttribute(Qt.WA_DeleteOnClose)
+            
+            # Add to main window and tabify with the map
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+            self.tabifyDockWidget(self.map_dock, dock)
+            dock.raise_()
+            
+            # Track the dock and clean up when it's destroyed
+            self.open_file_docks[filepath] = dock
+            dock.destroyed.connect(lambda: self.open_file_docks.pop(filepath, None))
             
             # Update status
             self.status_label.setText(f"Opened: {filename}")
@@ -645,10 +630,6 @@ class MainWindow(QMainWindow):
         widget.setLayout(layout)
         
         return widget
-        
-    def close_tab(self, index):
-        """Close a tab"""
-        self.central_tabs.removeTab(index)
         
     def update_memory_usage(self):
         """Update memory usage display"""
