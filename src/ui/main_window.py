@@ -265,11 +265,11 @@ class MainWindow(QMainWindow):
         self.data_dock = QDockWidget("Data Viewer", self)
         self.data_dock.setObjectName("DataViewerDock")
         # Remove the dock title bar to reclaim vertical space
-        from qtpy.QtWidgets import QWidget as _QtEmptyWidget
-        self.data_dock.setTitleBarWidget(_QtEmptyWidget())
+        # from qtpy.QtWidgets import QWidget as _QtEmptyWidget
+        # self.data_dock.setTitleBarWidget(_QtEmptyWidget())
+        self.data_dock.setFeatures(QDockWidget.DockWidgetMovable)
         self.data_viewer = DataViewer()
         self.data_dock.setWidget(self.data_viewer)
-        self.data_dock.setMinimumHeight(200)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.data_dock)
         
         # Set data viewer reference in project manager
@@ -323,8 +323,9 @@ class MainWindow(QMainWindow):
         # Set horizontal proportions: File Explorer | Layers/Lab | Map/Console
         self.resizeDocks([self.project_dock, self.layers_dock, self.console_dock], [180, 250, 1000], Qt.Horizontal)
         
-        # Set vertical proportion for bottom data viewer
-        self.resizeDocks([self.data_dock], [200], Qt.Vertical)
+        # Vertical proportion is now handled automatically by the widget's size policy
+        # Set a smaller default height for the Data Viewer dock
+        self.resizeDocks([self.data_dock], [120], Qt.Vertical)
         
         # Add dock toggles to View menu, ensuring not to add duplicates
         if not self.dock_menu.actions():

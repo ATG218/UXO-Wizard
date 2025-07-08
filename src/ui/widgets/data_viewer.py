@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableView, QToolBar, 
     QComboBox, QToolButton, QLabel, QLineEdit,
     QHeaderView, QMenu, QMessageBox, QDialog, QDialogButtonBox,
-    QTabWidget, QHBoxLayout, QPushButton, QFileDialog
+    QTabWidget, QHBoxLayout, QPushButton, QFileDialog, QSizePolicy
 )
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtCore import Qt, Signal, QAbstractTableModel, QModelIndex
@@ -167,6 +167,7 @@ class DataViewerTab(QWidget):
         
         # Table view
         self.table_view = QTableView()
+        self.table_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.table_view.setSortingEnabled(True)
         self.table_view.setAlternatingRowColors(True)
         self.table_view.setSelectionBehavior(QTableView.SelectRows)
@@ -916,10 +917,14 @@ class DataViewer(QWidget):
     
     def __init__(self):
         super().__init__()
+        # Set a reasonable minimum height and a flexible size policy
+        self.setMinimumHeight(50)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.setup_ui()
+        self.update_ui_state()
         
     def setup_ui(self):
-        """Initialize the UI"""
+        """Initialize the data viewer UI"""
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         
@@ -954,8 +959,6 @@ class DataViewer(QWidget):
         layout.addWidget(self.tab_widget)
         layout.addWidget(self.placeholder)
         self.setLayout(layout)
-        
-        self.update_ui_state()
         
     def add_empty_tab(self):
         """Add an empty data viewer tab"""
