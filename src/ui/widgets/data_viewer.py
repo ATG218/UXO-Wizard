@@ -1,16 +1,16 @@
 """
-Data Viewer Widget for UXO Wizard - Display and analyze tabular data
+Data Viewer Widget for UXO Wizard - Display and analyze tabular data and images
 """
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableView, QToolBar, 
     QComboBox, QToolButton, QLabel, QLineEdit,
     QHeaderView, QMenu, QMessageBox, QDialog, QDialogButtonBox,
-    QTabWidget, QHBoxLayout, QPushButton, QFileDialog, QSizePolicy
+    QTabWidget, QHBoxLayout, QFileDialog, QSizePolicy,
+    QStackedWidget, QScrollArea
 )
-from PySide6.QtGui import QAction, QIcon
-from PySide6.QtCore import Qt, Signal, QAbstractTableModel, QModelIndex
-from PySide6.QtGui import QKeySequence
+from PySide6.QtGui import QAction, QIcon, QPixmap
+from PySide6.QtCore import Qt, Signal, QAbstractTableModel, QModelIndex, QEvent
 import pandas as pd
 import numpy as np
 from loguru import logger
@@ -93,12 +93,17 @@ class DataViewerTab(QWidget):
     def __init__(self, filepath=None, project_manager=None):
         super().__init__()
         self.current_file = filepath
+        self.current_content_type = None  # 'data' or 'image'
+        self.original_pixmap = None
+        self.zoom_factor = 1.0
         self.project_manager = project_manager
         self.setup_ui()
         
-        # Load data if filepath provided
+        # Load data if filepath provided, otherwise set UI for empty data tab
         if filepath:
             self.load_data(filepath)
+        else:
+            self.set_ui_for_content_type('data')
         
     def setup_ui(self):
         """Initialize the UI for this tab"""
@@ -114,18 +119,27 @@ class DataViewerTab(QWidget):
         
         toolbar.addSeparator()
         
+        # Create a container widget for data-specific controls
+        self.data_toolbar_widget = QWidget()
+        data_toolbar_layout = QHBoxLayout()
+        data_toolbar_layout.setContentsMargins(0, 5, 0, 5)
+        self.data_toolbar_widget.setLayout(data_toolbar_layout)
+
         # Column filter
+        self.column_label = QLabel("Column:")
+        data_toolbar_layout.addWidget(self.column_label)
         self.column_combo = QComboBox()
         self.column_combo.setMinimumWidth(150)
         self.column_combo.currentTextChanged.connect(self.filter_columns)
-        toolbar.addWidget(QLabel("Column:"))
-        toolbar.addWidget(self.column_combo)
+        data_toolbar_layout.addWidget(self.column_combo)
         
         # Search
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search...")
         self.search_edit.textChanged.connect(self.search_data)
-        toolbar.addWidget(self.search_edit)
+        data_toolbar_layout.addWidget(self.search_edit)
+
+        self.data_toolbar_action = toolbar.addWidget(self.data_toolbar_widget)
         
         toolbar.addSeparator()
         
@@ -133,7 +147,7 @@ class DataViewerTab(QWidget):
         self.stats_btn = QToolButton()
         self.stats_btn.setText("Stats")
         self.stats_btn.clicked.connect(self.show_statistics)
-        toolbar.addWidget(self.stats_btn)
+        self.stats_action = toolbar.addWidget(self.stats_btn)
         
         # Metadata button  
         self.metadata_btn = QToolButton()
@@ -151,12 +165,48 @@ class DataViewerTab(QWidget):
         
         toolbar.addSeparator()
         
+        # Create a container widget for image controls
+        self.image_toolbar_widget = QWidget()
+        image_toolbar_layout = QHBoxLayout()
+        image_toolbar_layout.setContentsMargins(0, 5, 0, 5) # Add some vertical margin
+        self.image_toolbar_widget.setLayout(image_toolbar_layout)
+        
+        # Image zoom controls
+        self.zoom_in_btn = QToolButton()
+        self.zoom_in_btn.setText("🔍+")
+        self.zoom_in_btn.setToolTip("Zoom In (Ctrl+Mouse Wheel)")
+        self.zoom_in_btn.clicked.connect(self.zoom_in)
+        image_toolbar_layout.addWidget(self.zoom_in_btn)
+        
+        self.zoom_out_btn = QToolButton()
+        self.zoom_out_btn.setText("🔍-")
+        self.zoom_out_btn.setToolTip("Zoom Out (Ctrl+Mouse Wheel)")
+        self.zoom_out_btn.clicked.connect(self.zoom_out)
+        image_toolbar_layout.addWidget(self.zoom_out_btn)
+        
+        self.zoom_fit_btn = QToolButton()
+        self.zoom_fit_btn.setText("⌂")
+        self.zoom_fit_btn.setToolTip("Fit to Window")
+        self.zoom_fit_btn.clicked.connect(self.zoom_to_fit)
+        image_toolbar_layout.addWidget(self.zoom_fit_btn)
+        
+        self.zoom_label = QLabel("100%")
+        self.zoom_label.setMinimumWidth(50)
+        self.zoom_label.setToolTip("Current zoom level")
+        image_toolbar_layout.addWidget(self.zoom_label)
+        
+        # Add the container widget to the toolbar and get the associated QAction.
+        # Controlling the action's visibility is the robust way to do this.
+        self.image_toolbar_action = toolbar.addWidget(self.image_toolbar_widget)
+        
+        toolbar.addSeparator()
+        
         # Processing button
         self.process_btn = QToolButton()
         self.process_btn.setText("⚡ Process")
         self.process_btn.setToolTip("Open Processing Menu")
         self.process_btn.clicked.connect(self.show_processing_menu)
-        toolbar.addWidget(self.process_btn)
+        self.process_action = toolbar.addWidget(self.process_btn)
         
         # Plot on Map button (only show if map integration available)
         if MAP_INTEGRATION_AVAILABLE:
@@ -164,15 +214,32 @@ class DataViewerTab(QWidget):
             self.plot_map_btn.setText("📍 Plot on Map")
             self.plot_map_btn.setToolTip("Visualize this table as points on the map (requires coordinate columns)")
             self.plot_map_btn.clicked.connect(self.plot_on_map)
-            toolbar.addWidget(self.plot_map_btn)
+            self.plot_map_action = toolbar.addWidget(self.plot_map_btn)
         
-        # Table view
+        toolbar.addSeparator()
+
+        # Central content area
+        self.content_stack = QStackedWidget()
+        
+        # Table view for data
         self.table_view = QTableView()
         self.table_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.table_view.setSortingEnabled(True)
         self.table_view.setAlternatingRowColors(True)
         self.table_view.setSelectionBehavior(QTableView.SelectRows)
         
+        # Image viewer for images
+        self.image_viewer = QScrollArea()
+        self.image_viewer.setWidgetResizable(True)
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_viewer.setWidget(self.image_label)
+        # Add event filter for wheel zoom
+        self.image_viewer.viewport().installEventFilter(self)
+
+        self.content_stack.addWidget(self.table_view)
+        self.content_stack.addWidget(self.image_viewer)
+
         # Model
         self.model = PandasModel()
         self.table_view.setModel(self.model)
@@ -183,7 +250,7 @@ class DataViewerTab(QWidget):
         
         # Layout
         layout.addWidget(toolbar)
-        layout.addWidget(self.table_view)
+        layout.addWidget(self.content_stack)
         self.setLayout(layout)
         
     def _detect_csv_delimiter(self, filepath, encoding='utf-8', data_start_line=0):
@@ -443,37 +510,105 @@ class DataViewerTab(QWidget):
                     
             raise Exception(f"Failed to load CSV file with all attempted methods")
 
+    def set_ui_for_content_type(self, content_type: str):
+        """Configures the UI for 'data' or 'image' content type"""
+        self.current_content_type = content_type
+        is_data = (content_type == 'data')
+        is_image = (content_type == 'image')
+
+        if hasattr(self, 'data_toolbar_action'):
+            self.data_toolbar_action.setVisible(is_data)
+
+        # Use the QAction to control visibility for robustness
+        if hasattr(self, 'stats_action'):
+            self.stats_action.setVisible(is_data)
+        if hasattr(self, 'process_action'):
+            self.process_action.setVisible(is_data)
+
+        if MAP_INTEGRATION_AVAILABLE and hasattr(self, 'plot_map_action'):
+            self.plot_map_action.setVisible(is_data)
+
+        # Toggle the visibility of the image tools by showing/hiding the QAction
+        # that contains the image toolbar widget. This is more robust than
+        # hiding the widget itself, which was not working reliably.
+        if hasattr(self, 'image_toolbar_action'):
+            self.image_toolbar_action.setVisible(is_image)
+        
+        # The export button is always visible, but its action depends on content type
+        self.export_btn.setEnabled(is_data or is_image)
+
+        # For data, metadata button state is set in set_dataframe
+        # For images, let's disable it for now.
+        if not is_data:
+            self.metadata_btn.setEnabled(False)
+
+
     def load_data(self, filepath):
-        """Load data from file"""
+        """Load data or image from file"""
         try:
-            # Determine file type and load accordingly
-            if filepath.endswith('.csv'):
-                df = self._load_csv_enhanced(filepath)
-            elif filepath.endswith(('.xlsx', '.xls')):
-                df = pd.read_excel(filepath)
-            elif filepath.endswith('.json'):
-                df = pd.read_json(filepath)
-            else:
-                logger.error(f"Unsupported file type: {filepath}")
-                return
-                
-            self.set_dataframe(df)
-            self.current_file = filepath
-            
-            # Update tab title
             filename = os.path.basename(filepath)
+
+            # Determine file type and load accordingly
+            if filepath.lower().endswith(('.csv', '.xlsx', '.xls', '.json')):
+                if filepath.lower().endswith('.csv'):
+                    df = self._load_csv_enhanced(filepath)
+                elif filepath.lower().endswith(('.xlsx', '.xls')):
+                    df = pd.read_excel(filepath)
+                elif filepath.lower().endswith('.json'):
+                    df = pd.read_json(filepath)
+                self.set_dataframe(df)
+            elif filepath.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.tif')):
+                self.load_image(filepath)
+            else:
+                logger.error(f"Unsupported file type for Data Viewer: {filepath}")
+                QMessageBox.warning(self, "Unsupported File", f"The file type of '{filename}' is not supported in the Data Viewer.")
+                return
+
+            self.current_file = filepath
             self.tab_title_changed.emit(filename)
+            logger.info(f"Loaded file in Data Viewer: {filepath}")
+
+        except Exception as e:
+            logger.error(f"Error loading file in Data Viewer: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to load file:\n{str(e)}")
+
+    def load_image(self, filepath):
+        """Load and display an image file"""
+        try:
+            # Load the image
+            self.original_pixmap = QPixmap(filepath)
             
-            logger.info(f"Loaded data from: {filepath}")
+            if self.original_pixmap.isNull():
+                raise Exception("Failed to load image - invalid format or corrupted file")
+            
+            # Reset zoom and display image
+            self.zoom_factor = 1.0
+            self.content_stack.setCurrentWidget(self.image_viewer)
+            self.set_ui_for_content_type('image')
+            
+            # Initial display at actual size
+            self.update_image_display()
+            
+            # Update info label with image details
+            width = self.original_pixmap.width()
+            height = self.original_pixmap.height()
+            file_size = os.path.getsize(filepath)
+            file_size_mb = file_size / (1024 * 1024)
+            
+            self.info_label.setText(f"Image: {width}×{height} pixels | Size: {file_size_mb:.1f} MB")
+            
+            logger.info(f"Successfully loaded image: {width}×{height} pixels")
             
         except Exception as e:
-            logger.error(f"Error loading data: {str(e)}")
-            QMessageBox.critical(self, "Error", f"Failed to load data:\n{str(e)}")
-            
+            logger.error(f"Error loading image: {e}")
+            raise
+
     def set_dataframe(self, df):
         """Set the DataFrame to display"""
         self.model.setData(df)
-        
+        self.content_stack.setCurrentWidget(self.table_view)
+        self.set_ui_for_content_type('data')
+
         # Check for metadata
         has_metadata = hasattr(df, 'attrs') and 'file_metadata' in df.attrs
         self.metadata_btn.setEnabled(has_metadata)
@@ -643,11 +778,94 @@ class DataViewerTab(QWidget):
         
     def export_data(self):
         """Export current view to file"""
-        # TODO: Implement export dialog
-        logger.info("Export data requested")
+        try:
+            if self.current_content_type == 'image':
+                self.export_image()
+            elif self.current_content_type == 'data':
+                self.export_tabular_data()
+            else:
+                QMessageBox.information(self, "Export", "No data or image to export.")
+        except Exception as e:
+            logger.error(f"Error during export: {e}")
+            QMessageBox.critical(self, "Export Error", f"Failed to export:\n{str(e)}")
+
+    def export_image(self):
+        """Export the currently displayed image"""
+        if not self.original_pixmap:
+            QMessageBox.warning(self, "Export", "No image loaded to export.")
+            return
+
+        # Get export file path
+        file_dialog = QFileDialog()
+        file_dialog.setAcceptMode(QFileDialog.AcceptSave)
+        file_dialog.setNameFilter("PNG files (*.png);;JPEG files (*.jpg);;BMP files (*.bmp);;TIFF files (*.tiff);;All files (*)")
+        file_dialog.setDefaultSuffix("png")
+        
+        if self.current_file:
+            # Suggest a filename based on the current file
+            base_name = os.path.splitext(os.path.basename(self.current_file))[0]
+            file_dialog.selectFile(f"{base_name}_exported.png")
+
+        if file_dialog.exec() == QFileDialog.Accepted:
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                export_path = selected_files[0]
+                
+                # Save the original image (not the scaled display version)
+                success = self.original_pixmap.save(export_path)
+                
+                if success:
+                    QMessageBox.information(self, "Export Complete", f"Image exported successfully to:\n{export_path}")
+                    logger.info(f"Image exported to: {export_path}")
+                else:
+                    QMessageBox.critical(self, "Export Failed", "Failed to save the image.")
+
+    def export_tabular_data(self):
+        """Export the currently displayed tabular data"""
+        df = self.model.get_dataframe()
+        if df.empty:
+            QMessageBox.warning(self, "Export", "No data to export.")
+            return
+
+        # Get export file path
+        file_dialog = QFileDialog()
+        file_dialog.setAcceptMode(QFileDialog.AcceptSave)
+        file_dialog.setNameFilter("CSV files (*.csv);;Excel files (*.xlsx);;JSON files (*.json);;All files (*)")
+        file_dialog.setDefaultSuffix("csv")
+        
+        if self.current_file:
+            # Suggest a filename based on the current file
+            base_name = os.path.splitext(os.path.basename(self.current_file))[0]
+            file_dialog.selectFile(f"{base_name}_exported.csv")
+
+        if file_dialog.exec() == QFileDialog.Accepted:
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                export_path = selected_files[0]
+                
+                try:
+                    if export_path.lower().endswith('.csv'):
+                        df.to_csv(export_path, index=False)
+                    elif export_path.lower().endswith('.xlsx'):
+                        df.to_excel(export_path, index=False)
+                    elif export_path.lower().endswith('.json'):
+                        df.to_json(export_path, orient='records', indent=2)
+                    else:
+                        # Default to CSV
+                        df.to_csv(export_path, index=False)
+                    
+                    QMessageBox.information(self, "Export Complete", f"Data exported successfully to:\n{export_path}")
+                    logger.info(f"Data exported to: {export_path}")
+                    
+                except Exception as e:
+                    QMessageBox.critical(self, "Export Failed", f"Failed to export data:\n{str(e)}")
+                    logger.error(f"Export failed: {e}")
         
     def show_context_menu(self, position):
-        """Show context menu for table"""
+        """Show context menu for table (only for data content)"""
+        if self.current_content_type != 'data':
+            return
+            
         menu = QMenu()
         
         copy_action = QAction("Copy", self)
@@ -691,6 +909,61 @@ class DataViewerTab(QWidget):
         
         return df.iloc[rows]
     
+    def eventFilter(self, source, event):
+        """Handle wheel events for zooming on the image viewer."""
+        if source == self.image_viewer.viewport() and event.type() == QEvent.Wheel:
+            if event.modifiers() == Qt.ControlModifier:
+                if event.angleDelta().y() > 0:
+                    self.zoom_in()
+                else:
+                    self.zoom_out()
+                return True  # Event handled
+        return super().eventFilter(source, event)
+
+    def zoom_in(self):
+        """Zoom in on the image."""
+        self.zoom_factor *= 1.25
+        self.update_image_display()
+
+    def zoom_out(self):
+        """Zoom out of the image."""
+        self.zoom_factor *= 0.8
+        self.update_image_display()
+
+    def zoom_to_fit(self):
+        """Fit the image to the viewport."""
+        if not self.original_pixmap:
+            return
+    
+        view_size = self.image_viewer.viewport().size()
+        pixmap_size = self.original_pixmap.size()
+
+        if view_size.width() <= 0 or view_size.height() <= 0 or pixmap_size.width() <= 0 or pixmap_size.height() <= 0:
+            return
+
+        width_ratio = view_size.width() / pixmap_size.width()
+        height_ratio = view_size.height() / pixmap_size.height()
+        self.zoom_factor = min(width_ratio, height_ratio)
+    
+        self.update_image_display()
+
+    def update_image_display(self):
+        """Update the image label with the scaled pixmap."""
+        if not self.original_pixmap:
+            return
+
+        new_width = int(self.original_pixmap.width() * self.zoom_factor)
+        new_height = int(self.original_pixmap.height() * self.zoom_factor)
+
+        # Use a smooth transformation for better quality
+        scaled_pixmap = self.original_pixmap.scaled(
+            new_width, new_height,
+            Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+    
+        self.image_label.setPixmap(scaled_pixmap)
+        self.zoom_label.setText(f"{self.zoom_factor:.0%}")
+
     def show_processing_menu(self):
         """Show the processing menu dialog"""
         try:
@@ -752,8 +1025,10 @@ class DataViewerTab(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to open processing dialog:\n{str(e)}")
     
     def get_current_dataframe(self):
-        """Get the current dataframe"""
-        return self.model.get_dataframe()
+        """Get the current dataframe if content is data, otherwise empty."""
+        if self.current_content_type == 'data' and hasattr(self, 'model'):
+            return self.model.get_dataframe()
+        return pd.DataFrame()
     
     def detect_coordinate_columns(self, df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
         """Auto-detect latitude and longitude columns in DataFrame"""
@@ -1024,7 +1299,7 @@ class DataViewer(QWidget):
     def open_new_tab(self):
         """Open file dialog and create new tab with selected file"""
         file_dialog = QFileDialog()
-        file_dialog.setNameFilter("Data files (*.csv *.xlsx *.xls *.json);;CSV files (*.csv);;Excel files (*.xlsx *.xls);;JSON files (*.json);;All files (*)")
+        file_dialog.setNameFilter("All supported (*.csv *.xlsx *.xls *.json *.png *.jpg *.jpeg *.bmp *.gif *.tiff *.tif);;Data files (*.csv *.xlsx *.xls *.json);;Image files (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.tif);;CSV files (*.csv);;Excel files (*.xlsx *.xls);;JSON files (*.json);;All files (*)")
         
         if file_dialog.exec() == QFileDialog.Accepted:
             selected_files = file_dialog.selectedFiles()
@@ -1081,7 +1356,7 @@ class DataViewer(QWidget):
         """Load data into current tab or create new tab"""
         current_tab = self.get_current_tab()
         
-        if current_tab and isinstance(current_tab, DataViewerTab) and current_tab.get_current_dataframe().empty:
+        if current_tab and current_tab.current_file is None:
             # Use current empty data tab
             current_tab.load_data(filepath)
         else:
@@ -1103,4 +1378,5 @@ class DataViewer(QWidget):
         else:
             # If no data tab exists, create one
             tab = self.add_empty_tab()
-            tab.set_dataframe(df) 
+            tab.set_dataframe(df)
+            self.update_tab_title(tab, "Processed Data") 
