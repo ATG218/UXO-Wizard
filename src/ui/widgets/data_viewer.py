@@ -90,9 +90,10 @@ class DataViewerTab(QWidget):
     layer_created = Signal(object)  # Emits UXOLayer for map integration
     tab_title_changed = Signal(str)  # Emits when tab title should change
     
-    def __init__(self, filepath=None):
+    def __init__(self, filepath=None, project_manager=None):
         super().__init__()
         self.current_file = filepath
+        self.project_manager = project_manager
         self.setup_ui()
         
         # Load data if filepath provided
@@ -707,7 +708,7 @@ class DataViewerTab(QWidget):
             from .processing.processing_dialog import ProcessingDialog
             
             logger.debug("Creating processing dialog...")
-            dialog = ProcessingDialog(df, self, input_file_path=self.current_file)
+            dialog = ProcessingDialog(df, self, input_file_path=self.current_file, project_manager=self.project_manager)
             
             # Connect layer creation signal to forward to main application
             dialog.layer_created.connect(self.layer_created.emit)
@@ -915,11 +916,12 @@ class DataViewer(QWidget):
     data_selected = Signal(object)  # Emits selected data from active tab
     layer_created = Signal(object)  # Emits UXOLayer for map integration
     
-    def __init__(self):
+    def __init__(self, project_manager=None):
         super().__init__()
         # Set a reasonable minimum height and a flexible size policy
         self.setMinimumHeight(50)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.project_manager = project_manager
         self.setup_ui()
         self.update_ui_state()
         
@@ -962,7 +964,7 @@ class DataViewer(QWidget):
         
     def add_empty_tab(self):
         """Add an empty data viewer tab"""
-        tab = DataViewerTab()
+        tab = DataViewerTab(project_manager=self.project_manager)
         
         # Connect signals
         tab.data_selected.connect(self.data_selected)
@@ -980,7 +982,7 @@ class DataViewer(QWidget):
         
     def add_file_tab(self, filepath):
         """Add a new tab with a specific file loaded"""
-        tab = DataViewerTab(filepath)
+        tab = DataViewerTab(filepath, project_manager=self.project_manager)
         
         # Connect signals
         tab.data_selected.connect(self.data_selected)

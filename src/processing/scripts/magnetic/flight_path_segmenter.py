@@ -255,6 +255,7 @@ class FlightPathSegmenter(ScriptInterface):
                 data=df,  # Return original data as primary result
                 processing_script=self.name,
                 metadata={
+                    'processor': 'magnetic',
                     'total_segments': len(final_segments),
                     'segment_details': self._get_segment_statistics(final_segments),
                     'original_points': len(df),
@@ -303,7 +304,7 @@ class FlightPathSegmenter(ScriptInterface):
                 progress_callback(95, "Adding layer outputs...")
             
             # Add layer outputs for map visualization
-            self._add_layer_outputs(result, df, final_segments)
+            self._add_layer_outputs(result, df, final_segments, input_file_path)
             
             if progress_callback:
                 progress_callback(100, "Flight path segmentation complete!")
@@ -627,17 +628,26 @@ class FlightPathSegmenter(ScriptInterface):
             return f"H{int(heading)}"
     
     def _create_output_directory(self, input_file_path: Optional[str]) -> Path:
-        """Create output directory for segmentation results"""
+        """Create output directory for segmentation results in project/processed/magnetic/"""
         if input_file_path:
             input_path = Path(input_file_path)
             base_filename = input_path.stem
-            output_dir = input_path.parent / f"{base_filename}_segmented"
+            
+            # Find project root - look for working directory or use input file parent
+            project_dir = input_path.parent
+            while project_dir.parent != project_dir:  # Not at filesystem root
+                if (project_dir / "processed").exists() or len(list(project_dir.glob("*.uxo"))) > 0:
+                    break
+                project_dir = project_dir.parent
+            
+            # Create project/processed/magnetic/filename_segmented structure
+            output_dir = project_dir / "processed" / "magnetic" / f"{base_filename}_segmented"
         else:
             # Use temporary directory if no input file path
             temp_dir = tempfile.mkdtemp(prefix="flight_segmentation_")
             output_dir = Path(temp_dir)
         
-        output_dir.mkdir(exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
     
     def _get_base_filename(self, input_file_path: Optional[str]) -> str:
@@ -993,10 +1003,11 @@ class FlightPathSegmenter(ScriptInterface):
         return stats
     
     def _add_layer_outputs(self, result: ProcessingResult, df: pd.DataFrame, 
-                         segments: Dict[str, List[pd.DataFrame]]) -> None:
+                         segments: Dict[str, List[pd.DataFrame]], input_file_path: Optional[str] = None) -> None:
         """Add layer outputs for map visualization integration"""
         
         from loguru import logger
+        import datetime
         
         # 1. Add original flight path as a vector layer
         logger.info("Creating original flight path vector layer")
@@ -1015,6 +1026,14 @@ class FlightPathSegmenter(ScriptInterface):
         # Reset index to ensure clean line rendering
         original_flight_df = original_flight_df.reset_index(drop=True)
         
+        # Create unique layer names based on input filename and timestamp
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        if input_file_path:
+            input_filename = Path(input_file_path).stem
+            original_layer_name = f'{input_filename} - Original Flight Path ({timestamp})'
+        else:
+            original_layer_name = f'Original Flight Path ({timestamp})'
+        
         result.add_layer_output(
             layer_type="flight_path",
             data=original_flight_df,
@@ -1026,7 +1045,7 @@ class FlightPathSegmenter(ScriptInterface):
             },
             metadata={
                 'description': 'Complete original flight path',
-                'layer_name': 'Original Flight Path',
+                'layer_name': original_layer_name,
                 'total_points': len(original_flight_df)
             }
         )
@@ -1074,6 +1093,12 @@ class FlightPathSegmenter(ScriptInterface):
                 direction_index = list(segments.keys()).index(direction)
                 color = colors[direction_index % len(colors)]
                 
+                # Create unique layer name for each heading direction
+                if input_file_path:
+                    segment_layer_name = f'{input_filename} - Flight Lines - {direction} ({timestamp})'
+                else:
+                    segment_layer_name = f'Flight Lines - {direction} ({timestamp})'
+                
                 result.add_layer_output(
                     layer_type="flight_lines",
                     data=direction_df,
@@ -1087,7 +1112,7 @@ class FlightPathSegmenter(ScriptInterface):
                     },
                     metadata={
                         'description': f'Flight lines for {direction}',
-                        'layer_name': f'Flight Lines - {direction}',
+                        'layer_name': segment_layer_name,
                         'parallel_lines': len(seg_lines),
                         'total_points': total_points,
                         'direction': direction

@@ -500,12 +500,343 @@ Example layer groups:
 
 ## 5. Best Practices and Recommendations
 
-* **Immutability:** Treat the input `data` DataFrame as immutable. Create a copy before you start modifying it: `df = data.copy()`.
-* **Robust Parameter Access:** When accessing parameters, use `.get()` to avoid `KeyError` if the structure changes. As seen in `magbase_processing.py`: `process_opts = params.get('processing_options', {})`.
-* **Logging:** Use the `loguru` logger for detailed debugging. `from loguru import logger` is available. `logger.debug("Starting step 1")`.
-* **Progress Reporting:** Provide meaningful and frequent progress updates via the `progress_callback`. This is essential for long-running processes to keep the user informed.
-* **Error Handling:** Be specific in your error messages. Instead of "An error occurred," use "Failed to find required 'latitude' column."
-* **Code Organization:** For complex scripts like `magbase_processing`, break down the logic into smaller, private helper methods (e.g., `_interpolate_gps_gaps`, `_calculate_residual_anomalies`) to keep the `execute` method clean and readable.
-* **Performance:** For computationally intensive tasks, consider using libraries like `NumPy` for vectorized operations. For tasks that are highly parallelizable, you can use Python's `multiprocessing` library, as demonstrated in the `_calculate_residual_anomalies` function of `magbase_processing.py`.
+### 5.1 Essential Requirements
 
-By adhering to the `ScriptInterface` contract and following these guidelines, you can build powerful, reusable, and well-integrated processing scripts for the UXO Wizard application.
+#### **CRITICAL: Always Set Processor Metadata**
+```python
+# MUST include processor type in metadata to prevent output directory conflicts
+result.metadata.update({
+    'processor': 'magnetic',  # or 'gpr', 'gamma', etc.
+    # ... other metadata
+})
+```
+
+**Why this matters:** Without the processor metadata, scripts default to `processed/unknown/` directory, creating duplicate outputs and confusion. This is a common source of file organization issues.
+
+#### **Output Directory Structure**
+Scripts should create outputs in the project's `processed/` directory structure:
+```
+project_directory/
+├── processed/
+│   ├── magnetic/
+│   │   ├── filename_segmented/     # Flight path segmenter
+│   │   ├── filename_interpolated/  # Grid interpolator
+│   │   └── filename_processed/     # Other magnetic scripts
+│   ├── gpr/
+│   └── gamma/
+```
+
+Use the project manager's working directory:
+```python
+def _create_output_directory(self, input_file_path: Optional[str]) -> Path:
+    """Create output directory in project/processed/processor_type/"""
+    if input_file_path:
+        input_path = Path(input_file_path)
+        base_filename = input_path.stem
+        
+        # Find project root directory
+        project_dir = input_path.parent
+        while project_dir != project_dir.parent:
+            if (project_dir / "processed").exists() or len(list(project_dir.glob("*.uxo"))) > 0:
+                break
+            project_dir = project_dir.parent
+        
+        # Create project/processed/processor_type/filename_suffix structure
+        output_dir = project_dir / "processed" / "magnetic" / f"{base_filename}_processed"
+    else:
+        # Fallback to temporary directory
+        temp_dir = tempfile.mkdtemp(prefix="processor_")
+        output_dir = Path(temp_dir)
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+```
+
+### 5.2 Core Development Practices
+
+#### **Data Handling**
+* **Immutability:** Always create a copy of input data: `df = data.copy()`
+* **Robust Parameter Access:** Use `.get()` for safe parameter access:
+  ```python
+  # Good
+  grid_resolution = interp_params.get('grid_resolution', {}).get('value', 300)
+  
+  # Bad - will fail if structure changes
+  grid_resolution = interp_params['grid_resolution']['value']
+  ```
+* **Column Validation:** Check for required columns before processing:
+  ```python
+  required_columns = ['Latitude [Decimal Degrees]', 'Longitude [Decimal Degrees]']
+  missing_columns = [col for col in required_columns if col not in data.columns]
+  if missing_columns:
+      raise ProcessingError(f"Missing required columns: {missing_columns}")
+  ```
+
+#### **Progress Reporting**
+Provide meaningful progress updates for user feedback:
+```python
+def execute(self, data, params, progress_callback=None, input_file_path=None):
+    if progress_callback:
+        progress_callback(0, "Starting processing...")
+    
+    # ... processing steps ...
+    
+    if progress_callback:
+        progress_callback(0.3, "Interpolating grid...")
+    
+    # ... more processing ...
+    
+    if progress_callback:
+        progress_callback(0.8, "Creating visualizations...")
+    
+    # ... final steps ...
+    
+    if progress_callback:
+        progress_callback(1.0, "Processing complete!")
+```
+
+### 5.3 Layer Creation Best Practices
+
+#### **Unique Layer Names**
+Always create unique layer names to prevent overwrites:
+```python
+import datetime
+
+# Create unique names with timestamp and input filename
+timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+if input_file_path:
+    input_filename = Path(input_file_path).stem
+    layer_name = f'{input_filename} - Grid Interpolation ({timestamp})'
+else:
+    layer_name = f'Grid Interpolation ({timestamp})'
+
+result.add_layer_output(
+    layer_type='raster',
+    data=grid_data,
+    style_info={},
+    metadata={'layer_name': layer_name}
+)
+```
+
+#### **Toggleable Features**
+Make expensive or optional features toggleable:
+```python
+def get_parameters(self):
+    return {
+        'output_parameters': {
+            'include_original_points': {
+                'value': False,  # Default to False for performance
+                'type': 'bool',
+                'description': 'Include original data points as a map layer'
+            },
+            'create_diagnostics': {
+                'value': True,
+                'type': 'bool', 
+                'description': 'Generate diagnostic plots and analysis'
+            }
+        }
+    }
+
+def execute(self, data, params, progress_callback=None, input_file_path=None):
+    # Extract toggleable parameters
+    include_original = params.get('output_parameters', {}).get('include_original_points', {}).get('value', False)
+    
+    # Only create expensive layers if requested
+    if include_original:
+        if progress_callback:
+            progress_callback(0.9, "Creating original data points layer...")
+        # ... create original points layer ...
+```
+
+### 5.4 Error Handling and Validation
+
+#### **Specific Error Messages**
+```python
+# Good - specific and actionable
+if 'Btotal1 [nT]' not in data.columns:
+    available_cols = [col for col in data.columns if 'nT' in col]
+    raise ProcessingError(f"Missing magnetic field column 'Btotal1 [nT]'. Available magnetic columns: {available_cols}")
+
+# Bad - generic and unhelpful
+if 'Btotal1 [nT]' not in data.columns:
+    raise ProcessingError("Missing required column")
+```
+
+#### **Graceful Degradation**
+```python
+# Try advanced features, fall back to basic if needed
+try:
+    from numba import jit
+    NUMBA_AVAILABLE = True
+except ImportError:
+    def jit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+    NUMBA_AVAILABLE = False
+
+# Use in processing
+if NUMBA_AVAILABLE:
+    result = self._fast_interpolation(data)
+else:
+    result = self._basic_interpolation(data)
+```
+
+### 5.5 Performance Optimization
+
+#### **Efficient Data Processing**
+```python
+# Use vectorized operations
+import numpy as np
+
+# Good - vectorized
+distances = np.sqrt((x - target_x)**2 + (y - target_y)**2)
+
+# Bad - loops
+distances = []
+for i in range(len(x)):
+    dist = np.sqrt((x[i] - target_x)**2 + (y[i] - target_y)**2)
+    distances.append(dist)
+```
+
+#### **Memory Management**
+```python
+# For large datasets, process in chunks
+def process_large_dataset(self, data, chunk_size=10000):
+    results = []
+    for i in range(0, len(data), chunk_size):
+        chunk = data.iloc[i:i+chunk_size]
+        processed_chunk = self._process_chunk(chunk)
+        results.append(processed_chunk)
+    return pd.concat(results, ignore_index=True)
+```
+
+### 5.6 Common Pitfalls to Avoid
+
+#### **1. Missing Processor Metadata**
+```python
+# WRONG - will create processed/unknown/ directory
+result = ProcessingResult(
+    success=True,
+    data=processed_data,
+    metadata={'custom_field': 'value'}
+)
+
+# CORRECT - properly categorized
+result = ProcessingResult(
+    success=True,
+    data=processed_data,
+    metadata={
+        'processor': 'magnetic',  # Essential!
+        'custom_field': 'value'
+    }
+)
+```
+
+#### **2. Layer Name Conflicts**
+```python
+# WRONG - will overwrite previous layers
+result.add_layer_output(
+    layer_type='raster',
+    data=grid_data,
+    metadata={'layer_name': 'Grid Interpolation'}  # Static name
+)
+
+# CORRECT - unique names
+timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+input_filename = Path(input_file_path).stem if input_file_path else 'data'
+layer_name = f'{input_filename} - Grid Interpolation ({timestamp})'
+```
+
+#### **3. Unsafe Parameter Access**
+```python
+# WRONG - will crash if structure changes
+resolution = params['interpolation_parameters']['grid_resolution']['value']
+
+# CORRECT - safe access with defaults
+resolution = params.get('interpolation_parameters', {}).get('grid_resolution', {}).get('value', 300)
+```
+
+#### **4. Poor Progress Reporting**
+```python
+# WRONG - no user feedback
+def execute(self, data, params, progress_callback=None, input_file_path=None):
+    # ... long processing with no updates ...
+    result = ProcessingResult(success=True, data=processed_data)
+    return result
+
+# CORRECT - regular progress updates
+def execute(self, data, params, progress_callback=None, input_file_path=None):
+    if progress_callback:
+        progress_callback(0, "Starting processing...")
+    
+    # ... processing step 1 ...
+    
+    if progress_callback:
+        progress_callback(0.3, "Interpolating grid...")
+    
+    # ... processing step 2 ...
+    
+    if progress_callback:
+        progress_callback(1.0, "Processing complete!")
+```
+
+### 5.7 Testing and Debugging
+
+#### **Logging for Development**
+```python
+from loguru import logger
+
+def execute(self, data, params, progress_callback=None, input_file_path=None):
+    logger.info(f"Starting {self.name} with {len(data)} data points")
+    logger.debug(f"Parameters: {params}")
+    
+    # ... processing ...
+    
+    logger.info(f"Processing complete. Generated {len(result.layer_outputs)} layers")
+```
+
+#### **Parameter Validation**
+```python
+def validate_parameters(self, params):
+    """Validate parameters before processing"""
+    grid_resolution = params.get('interpolation_parameters', {}).get('grid_resolution', {}).get('value', 300)
+    
+    if grid_resolution < 10 or grid_resolution > 1000:
+        raise ProcessingError(f"Grid resolution {grid_resolution} is outside valid range (10-1000)")
+    
+    return True
+```
+
+### 5.8 Documentation and Maintenance
+
+#### **Clear Parameter Descriptions**
+```python
+def get_parameters(self):
+    return {
+        'interpolation_parameters': {
+            'grid_resolution': {
+                'value': 300,
+                'type': 'int',
+                'min': 10,
+                'max': 1000,
+                'description': 'Number of grid points per axis (total grid = resolution²). Higher values = more detail but slower processing.'
+            }
+        }
+    }
+```
+
+#### **Comprehensive Metadata**
+```python
+result.metadata.update({
+    'processor': 'magnetic',
+    'processing_method': 'minimum_curvature',
+    'grid_resolution': grid_resolution,
+    'field_processed': field_column,
+    'data_points': len(data),
+    'numba_acceleration': NUMBA_AVAILABLE,
+    'processing_time': time.time() - start_time
+})
+```
+
+By following these practices, you'll create robust, maintainable, and well-integrated processing scripts that provide excellent user experience and reliable results in the UXO Wizard framework.

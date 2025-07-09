@@ -342,9 +342,9 @@ class ProcessingWidget(QWidget):
     # NOTE: data_updated signal removed for clean processor architecture
     # data_updated = Signal(pd.DataFrame)
     
-    def __init__(self):
+    def __init__(self, project_manager=None):
         super().__init__()
-        self.pipeline = ProcessingPipeline()
+        self.pipeline = ProcessingPipeline(project_manager)
         self.current_data: Optional[pd.DataFrame] = None
         self.current_input_file: Optional[str] = None
         self.setup_ui()

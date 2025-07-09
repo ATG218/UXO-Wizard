@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable
 import tempfile
+import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -122,6 +123,11 @@ class GridInterpolator(ScriptInterface):
                     'type': 'choice',
                     'choices': ['auto', 'R1 [nT]', 'Btotal1 [nT]', 'Total [nT]', 'B_total [nT]'],
                     'description': 'Magnetic field column to interpolate'
+                },
+                'include_original_points': {
+                    'value': False,
+                    'type': 'bool',
+                    'description': 'Include original data points as a map layer'
                 }
             }
         }
@@ -357,10 +363,16 @@ class GridInterpolator(ScriptInterface):
         grid_X, grid_Y = np.meshgrid(grid_x, grid_y)
         
         # Initialize grid with linear interpolation first
+        if progress_callback:
+            progress_callback(0.18, "Creating initial grid with linear interpolation...")
+        
         from scipy.interpolate import griddata
         
         # Create initial grid using linear interpolation to fill entire domain
         grid_z_initial = griddata((x, y), z, (grid_X, grid_Y), method='linear', fill_value=np.nan)
+        
+        if progress_callback:
+            progress_callback(0.20, "Filling gaps with nearest neighbor interpolation...")
         
         # Fill any remaining NaN values with nearest neighbor interpolation
         nan_mask = np.isnan(grid_z_initial)
@@ -371,7 +383,7 @@ class GridInterpolator(ScriptInterface):
         grid_z = grid_z_initial.copy()
         
         if progress_callback:
-            progress_callback(0.2, "Mapping data points to grid...")
+            progress_callback(0.22, "Mapping data points to grid...")
         
         # Create data constraint mask and values like the original script
         ny, nx = grid_z.shape
@@ -398,12 +410,20 @@ class GridInterpolator(ScriptInterface):
         # Apply data constraints to the initial grid
         grid_z[data_mask] = data_values[data_mask]
         
-        # Value bounds for stability
-        min_allowed = np.min(z) - 2 * np.std(z)
-        max_allowed = np.max(z) + 2 * np.std(z)
+        # Value bounds for stability like original script
+        data_range = np.ptp(z)
+        data_mean = np.mean(z)
+        min_allowed = data_mean - 3 * data_range
+        max_allowed = data_mean + 3 * data_range
         
         if progress_callback:
             progress_callback(0.3, "Starting minimum curvature iterations...")
+        
+        # Use stable omega value like original script
+        omega = 0.5  # Much lower omega for stability
+        
+        if progress_callback:
+            progress_callback(0.25, f"Fixed {np.sum(data_mask)} grid points to data values, starting {max_iterations} iterations...")
         
         # Iterative minimum curvature
         for iteration in range(max_iterations):
@@ -416,19 +436,25 @@ class GridInterpolator(ScriptInterface):
                     grid_z, data_mask, data_values, omega, min_allowed, max_allowed
                 )
             
-            # Progress update
-            if progress_callback and iteration % 50 == 0:
-                progress = 0.3 + 0.6 * (iteration / max_iterations)
-                progress_callback(progress, f"Iteration {iteration+1}/{max_iterations}, change: {max_change:.2e}")
+            # Early detection of instability like original script
+            if max_change > data_range:
+                if progress_callback:
+                    progress_callback(0.8, f"Large change detected at iteration {iteration+1}, stopping early")
+                break
+            
+            # Progress update - more frequent for better feedback
+            if progress_callback and iteration % 25 == 0:
+                progress = 0.25 + 0.55 * (iteration / max_iterations)  # Reserve 0.25-0.80 for iterations
+                progress_callback(progress, f"Iteration {iteration+1}/{max_iterations}, max change: {max_change:.2e}")
             
             # Check for convergence
             if max_change < tolerance:
                 if progress_callback:
-                    progress_callback(0.9, f"Converged after {iteration+1} iterations")
+                    progress_callback(0.8, f"Converged after {iteration+1} iterations")
                 break
         
         if progress_callback:
-            progress_callback(1.0, "Interpolation complete")
+            progress_callback(0.82, "Minimum curvature interpolation complete")
         
         return grid_X, grid_Y, grid_z
     
@@ -527,6 +553,380 @@ class GridInterpolator(ScriptInterface):
         
         return diagnostic_path
     
+    def create_contour_raster(self, grid_X, grid_Y, grid_z, bounds):
+        """Create a contour lines raster overlay using matplotlib like the original script"""
+        try:
+            import matplotlib.pyplot as plt
+            
+            # Create contour levels
+            field_min = np.nanmin(grid_z)
+            field_max = np.nanmax(grid_z)
+            
+            if field_min >= field_max or np.isnan(field_min) or np.isnan(field_max):
+                return None
+                
+            # Create contour levels
+            num_contours = 10
+            contour_levels = np.linspace(field_min, field_max, num_contours + 1)
+            
+            # Create matplotlib figure for contour calculation (not displayed)
+            fig, ax = plt.subplots(figsize=(1, 1))
+            ax.set_aspect('equal')
+            
+            # Generate contours
+            cs = ax.contour(grid_X, grid_Y, grid_z, levels=contour_levels)
+            
+            # Create contour raster data matching the main field format
+            contour_field = np.full_like(grid_z, np.nan)
+            total_points_marked = 0
+            
+            # Handle different matplotlib versions exactly like the original script
+            if hasattr(cs, 'collections'):
+                collections = cs.collections
+            else:
+                # For newer matplotlib versions (QuadContourSet)
+                collections = cs.allsegs if hasattr(cs, 'allsegs') else []
+            
+            if hasattr(cs, 'collections'):
+                # Old matplotlib API
+                for i, collection in enumerate(collections):
+                    if i < len(contour_levels):
+                        level = contour_levels[i]
+                        
+                        # Extract paths from collection
+                        for path in collection.get_paths():
+                            vertices = path.vertices
+                            if len(vertices) > 0:
+                                # Convert to grid indices
+                                x_indices = np.round((vertices[:, 0] - bounds[0]) / (bounds[2] - bounds[0]) * (grid_z.shape[1] - 1)).astype(int)
+                                y_indices = np.round((vertices[:, 1] - bounds[1]) / (bounds[3] - bounds[1]) * (grid_z.shape[0] - 1)).astype(int)
+                                
+                                # Clamp to valid range
+                                x_indices = np.clip(x_indices, 0, grid_z.shape[1] - 1)
+                                y_indices = np.clip(y_indices, 0, grid_z.shape[0] - 1)
+                                
+                                # Mark contour lines with their value
+                                contour_field[y_indices, x_indices] = level
+                                total_points_marked += len(x_indices)
+            else:
+                # New matplotlib API - use allsegs
+                for i, level_segs in enumerate(collections):
+                    if i >= len(contour_levels):
+                        break
+                    level = contour_levels[i]
+                    
+                    # Extract segments for this level
+                    for seg in level_segs:
+                        if len(seg) > 0:
+                            # Convert to grid indices
+                            x_indices = np.round((seg[:, 0] - bounds[0]) / (bounds[2] - bounds[0]) * (grid_z.shape[1] - 1)).astype(int)
+                            y_indices = np.round((seg[:, 1] - bounds[1]) / (bounds[3] - bounds[1]) * (grid_z.shape[0] - 1)).astype(int)
+                            
+                            # Clamp to valid range
+                            x_indices = np.clip(x_indices, 0, grid_z.shape[1] - 1)
+                            y_indices = np.clip(y_indices, 0, grid_z.shape[0] - 1)
+                            
+                            # Mark contour lines with their value
+                            contour_field[y_indices, x_indices] = level
+                            total_points_marked += len(x_indices)
+            
+            plt.close(fig)  # Clean up matplotlib figure
+            
+            if total_points_marked == 0:
+                return None
+            
+            return {
+                'grid': contour_field,
+                'bounds': bounds,
+                'field_name': 'contours'
+            }
+            
+        except Exception:
+            return None
+    
+    def create_comprehensive_analysis(self, data, grid_X, grid_Y, grid_z, field_column, input_file_path, temp_dir):
+        """Create comprehensive analysis like the original script"""
+        try:
+            # Create analysis directory in project/processed/magnetic/
+            if input_file_path:
+                input_path = Path(input_file_path)
+                base_filename = input_path.stem
+                
+                # Find project root - look for working directory or use input file parent
+                project_dir = input_path.parent
+                while project_dir.parent != project_dir:  # Not at filesystem root
+                    if (project_dir / "processed").exists() or len(list(project_dir.glob("*.uxo"))) > 0:
+                        break
+                    project_dir = project_dir.parent
+                
+                # Create project/processed/magnetic/filename_grid_analysis structure
+                analysis_dir = project_dir / "processed" / "magnetic" / f"{base_filename}_grid_analysis"
+            else:
+                analysis_dir = temp_dir / 'grid_analysis'
+            
+            analysis_dir.mkdir(exist_ok=True)
+            
+            # Extract coordinates and values for analysis
+            x = data['Longitude [Decimal Degrees]'].values
+            y = data['Latitude [Decimal Degrees]'].values
+            z = data[field_column].values
+            
+            # Remove NaN values
+            valid_mask = ~(np.isnan(x) | np.isnan(y) | np.isnan(z))
+            x_clean = x[valid_mask]
+            y_clean = y[valid_mask]
+            z_clean = z[valid_mask]
+            
+            # 1. Create field visualization plots
+            self.create_field_plots(grid_X, grid_Y, grid_z, x_clean, y_clean, z_clean, field_column, analysis_dir)
+            
+            # 2. Create diagnostic plots  
+            self.create_diagnostic_plots(grid_X, grid_Y, grid_z, x_clean, y_clean, z_clean, field_column, analysis_dir)
+            
+            # 3. Create data summary
+            self.create_data_summary(data, grid_z, field_column, analysis_dir)
+            
+            # 4. Save processed grid as CSV
+            self.save_processed_grid(grid_X, grid_Y, grid_z, field_column, analysis_dir)
+            
+            return analysis_dir
+            
+        except Exception:
+            return None
+    
+    def create_field_plots(self, grid_X, grid_Y, grid_z, x_data, y_data, z_data, field_column, output_dir):
+        """Create field visualization plots with contours"""
+        try:
+            # Create field plots directory
+            field_plots_dir = output_dir / "field_visualizations"
+            field_plots_dir.mkdir(exist_ok=True)
+            
+            # Global min/max for consistent scaling
+            global_min = np.nanmin(grid_z)
+            global_max = np.nanmax(grid_z)
+            
+            # Create comprehensive field plot
+            _, axes = plt.subplots(1, 3, figsize=(20, 6))
+            
+            # Plot 1: Interpolated field with contours
+            ax1 = axes[0]
+            levels = np.linspace(global_min, global_max, 20)
+            im1 = ax1.contourf(grid_X, grid_Y, grid_z, levels=levels, cmap='RdYlBu_r', extend='both')
+            
+            # Add contour lines
+            contour_levels = np.linspace(global_min, global_max, 10)
+            positive_levels = contour_levels[contour_levels >= 0]
+            negative_levels = contour_levels[contour_levels < 0]
+            
+            if len(positive_levels) > 0:
+                cs_pos = ax1.contour(grid_X, grid_Y, grid_z, levels=positive_levels, colors='red', linewidths=1.5, alpha=0.7)
+                ax1.clabel(cs_pos, inline=True, fontsize=8, fmt='%d')
+            
+            if len(negative_levels) > 0:
+                cs_neg = ax1.contour(grid_X, grid_Y, grid_z, levels=negative_levels, colors='blue', linewidths=1.5, alpha=0.7)
+                ax1.clabel(cs_neg, inline=True, fontsize=8, fmt='%d')
+            
+            ax1.set_title(f'Interpolated {field_column}\nField with Contours')
+            ax1.set_xlabel('Longitude')
+            ax1.set_ylabel('Latitude')
+            ax1.set_aspect('equal')
+            plt.colorbar(im1, ax=ax1, shrink=0.8, label=field_column)
+            
+            # Plot 2: Original data points overlay
+            ax2 = axes[1]
+            ax2.contourf(grid_X, grid_Y, grid_z, levels=levels, cmap='RdYlBu_r', extend='both', alpha=0.7)
+            scatter = ax2.scatter(x_data, y_data, c=z_data, cmap='RdYlBu_r', s=1, alpha=0.8, vmin=global_min, vmax=global_max)
+            ax2.set_title(f'{field_column}\nField + Original Data Points')
+            ax2.set_xlabel('Longitude')
+            ax2.set_ylabel('Latitude')
+            ax2.set_aspect('equal')
+            plt.colorbar(scatter, ax=ax2, shrink=0.8, label=field_column)
+            
+            # Plot 3: Contour lines only
+            ax3 = axes[2]
+            ax3.set_facecolor('white')
+            
+            if len(positive_levels) > 0:
+                cs_pos_clean = ax3.contour(grid_X, grid_Y, grid_z, levels=positive_levels, colors='red', linewidths=2)
+                ax3.clabel(cs_pos_clean, inline=True, fontsize=10, fmt='%d nT')
+            
+            if len(negative_levels) > 0:
+                cs_neg_clean = ax3.contour(grid_X, grid_Y, grid_z, levels=negative_levels, colors='blue', linewidths=2)
+                ax3.clabel(cs_neg_clean, inline=True, fontsize=10, fmt='%d nT')
+            
+            # Zero contour
+            zero_level = [0] if global_min <= 0 <= global_max else []
+            if zero_level:
+                cs_zero = ax3.contour(grid_X, grid_Y, grid_z, levels=zero_level, colors='black', linewidths=3)
+                ax3.clabel(cs_zero, inline=True, fontsize=12, fmt='%d nT')
+            
+            ax3.set_title(f'{field_column}\nContour Lines Only')
+            ax3.set_xlabel('Longitude')
+            ax3.set_ylabel('Latitude')
+            ax3.set_aspect('equal')
+            ax3.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(field_plots_dir / f'field_visualization_{field_column.replace(" ", "_")}.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            
+        except Exception:
+            pass
+    
+    def create_diagnostic_plots(self, grid_X, grid_Y, grid_z, x_data, y_data, z_data, field_column, output_dir):
+        """Create comprehensive diagnostic plots"""
+        try:
+            # Create diagnostic plots directory
+            diagnostic_dir = output_dir / "diagnostic_plots"
+            diagnostic_dir.mkdir(exist_ok=True)
+            
+            # Interpolate grid values at original data points for residual analysis
+            from scipy.interpolate import griddata
+            grid_at_data = griddata((grid_X.ravel(), grid_Y.ravel()), grid_z.ravel(), (x_data, y_data), method='linear')
+            
+            # Calculate residuals
+            valid_interp_mask = ~np.isnan(grid_at_data)
+            residuals = z_data[valid_interp_mask] - grid_at_data[valid_interp_mask]
+            
+            # Create diagnostic figure
+            fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+            fig.suptitle(f'Grid Interpolation Diagnostics - {field_column}', fontsize=16)
+            
+            # 1. Original data distribution
+            axes[0, 0].scatter(x_data, y_data, c=z_data, cmap='RdYlBu_r', s=2, alpha=0.7)
+            axes[0, 0].set_title('Original Data Points')
+            axes[0, 0].set_xlabel('Longitude')
+            axes[0, 0].set_ylabel('Latitude')
+            axes[0, 0].set_aspect('equal')
+            
+            # 2. Interpolated grid
+            im = axes[0, 1].contourf(grid_X, grid_Y, grid_z, levels=50, cmap='RdYlBu_r')
+            axes[0, 1].set_title('Interpolated Grid')
+            axes[0, 1].set_xlabel('Longitude')
+            axes[0, 1].set_ylabel('Latitude')
+            axes[0, 1].set_aspect('equal')
+            plt.colorbar(im, ax=axes[0, 1])
+            
+            # 3. Residual histogram
+            axes[0, 2].hist(residuals, bins=50, alpha=0.7, edgecolor='black')
+            axes[0, 2].set_title('Residual Distribution')
+            axes[0, 2].set_xlabel('Residual (nT)')
+            axes[0, 2].set_ylabel('Frequency')
+            axes[0, 2].grid(True, alpha=0.3)
+            
+            # 4. Residual spatial distribution
+            valid_x = x_data[valid_interp_mask]
+            valid_y = y_data[valid_interp_mask]
+            scatter = axes[1, 0].scatter(valid_x, valid_y, c=residuals, cmap='RdBu_r', s=2, alpha=0.7)
+            axes[1, 0].set_title('Spatial Distribution of Residuals')
+            axes[1, 0].set_xlabel('Longitude')
+            axes[1, 0].set_ylabel('Latitude')
+            axes[1, 0].set_aspect('equal')
+            plt.colorbar(scatter, ax=axes[1, 0], label='Residual (nT)')
+            
+            # 5. Predicted vs Observed
+            predicted = grid_at_data[valid_interp_mask]
+            observed = z_data[valid_interp_mask]
+            axes[1, 1].scatter(predicted, observed, alpha=0.5, s=1)
+            min_val = min(np.min(predicted), np.min(observed))
+            max_val = max(np.max(predicted), np.max(observed))
+            axes[1, 1].plot([min_val, max_val], [min_val, max_val], 'r--', label='1:1 Line')
+            axes[1, 1].set_xlabel('Predicted (nT)')
+            axes[1, 1].set_ylabel('Observed (nT)')
+            axes[1, 1].set_title('Predicted vs Observed')
+            axes[1, 1].legend()
+            axes[1, 1].grid(True, alpha=0.3)
+            
+            # 6. Statistics
+            axes[1, 2].axis('off')
+            rmse = np.sqrt(np.mean(residuals**2))
+            mae = np.mean(np.abs(residuals))
+            r_squared = np.corrcoef(predicted, observed)[0, 1]**2 if len(predicted) > 1 else 0
+            
+            stats_text = f"""
+            Interpolation Statistics:
+            
+            RMSE: {rmse:.2f} nT
+            MAE: {mae:.2f} nT
+            R²: {r_squared:.3f}
+            
+            Mean Residual: {np.mean(residuals):.2f} nT
+            Std Residual: {np.std(residuals):.2f} nT
+            
+            Valid Points: {len(residuals):,}
+            Grid Size: {grid_z.shape[0]}×{grid_z.shape[1]}
+            """
+            
+            axes[1, 2].text(0.1, 0.9, stats_text, transform=axes[1, 2].transAxes, 
+                           fontsize=12, verticalalignment='top', 
+                           bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+            
+            plt.tight_layout()
+            plt.savefig(diagnostic_dir / f'interpolation_diagnostics_{field_column.replace(" ", "_")}.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            
+        except Exception:
+            pass
+    
+    def create_data_summary(self, data, grid_z, field_column, output_dir):
+        """Create data summary report"""
+        try:
+            summary_text = f"""
+Grid Interpolation Summary Report
+================================
+
+Input Data:
+- Total points: {len(data):,}
+- Valid points: {len(data.dropna()):,}
+- Field processed: {field_column}
+
+Data Range:
+- Minimum: {data[field_column].min():.2f} nT
+- Maximum: {data[field_column].max():.2f} nT
+- Mean: {data[field_column].mean():.2f} nT
+- Standard deviation: {data[field_column].std():.2f} nT
+
+Grid Information:
+- Grid size: {grid_z.shape[0]} × {grid_z.shape[1]}
+- Valid grid points: {np.sum(~np.isnan(grid_z)):,}
+- Grid coverage: {(np.sum(~np.isnan(grid_z)) / grid_z.size * 100):.1f}%
+
+Interpolation Method:
+- Algorithm: Minimum Curvature
+- JIT acceleration: {"Yes" if NUMBA_AVAILABLE else "No"}
+
+Processing Information:
+- Generated: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+- Software: UXO Wizard Grid Interpolator
+"""
+            
+            summary_path = output_dir / 'interpolation_summary.txt'
+            with open(summary_path, 'w') as f:
+                f.write(summary_text)
+                
+        except Exception:
+            pass
+    
+    def save_processed_grid(self, grid_X, grid_Y, grid_z, field_column, output_dir):
+        """Save processed grid as CSV"""
+        try:
+            # Create grid DataFrame
+            grid_df = pd.DataFrame({
+                'longitude': grid_X.ravel(),
+                'latitude': grid_Y.ravel(),
+                'value': grid_z.ravel()
+            })
+            
+            # Remove NaN values
+            grid_df = grid_df.dropna()
+            
+            # Save to CSV
+            grid_csv_path = output_dir / f'grid_minimum_curvature_{field_column.replace(" ", "_").replace("[", "").replace("]", "")}.csv'
+            grid_df.to_csv(grid_csv_path, index=False)
+            
+        except Exception:
+            pass
+    
     def execute(self, data: pd.DataFrame, params: Dict[str, Any], 
                 progress_callback: Optional[Callable] = None, input_file_path: Optional[str] = None) -> ProcessingResult:
         """
@@ -548,9 +948,12 @@ class GridInterpolator(ScriptInterface):
         try:
             # Validate input data
             if progress_callback:
-                progress_callback(0.05, "Validating input data...")
+                progress_callback(0.02, "Validating input data...")
             
             self.validate_data(data)
+            
+            if progress_callback:
+                progress_callback(0.04, "Extracting processing parameters...")
             
             # Get processing parameters
             interp_params = params.get('interpolation_parameters', {})
@@ -569,17 +972,27 @@ class GridInterpolator(ScriptInterface):
             target_field = output_params.get('magnetic_field_column', {}).get('value', 'auto')
             generate_diagnostics = output_params.get('generate_diagnostics', {}).get('value', True)
             save_grid_data = output_params.get('save_grid_data', {}).get('value', True)
+            include_original_points = output_params.get('include_original_points', {}).get('value', False)
+            
+            if progress_callback:
+                progress_callback(0.06, "Detecting magnetic field column...")
             
             # Get magnetic field column
             field_column = self.get_magnetic_field_column(data, target_field)
             
             if progress_callback:
-                progress_callback(0.1, f"Processing {len(data)} data points using field: {field_column}")
+                progress_callback(0.08, f"Processing {len(data)} data points using field: {field_column}")
             
             # Extract coordinates and values
+            if progress_callback:
+                progress_callback(0.10, "Extracting coordinates and field values...")
+            
             x = data['Longitude [Decimal Degrees]'].values
             y = data['Latitude [Decimal Degrees]'].values
             z = data[field_column].values
+            
+            if progress_callback:
+                progress_callback(0.12, "Cleaning data (removing NaN values)...")
             
             # Remove NaN values
             valid_mask = ~(np.isnan(x) | np.isnan(y) | np.isnan(z))
@@ -588,9 +1001,12 @@ class GridInterpolator(ScriptInterface):
             if len(x) == 0:
                 raise ProcessingError("No valid data points after removing NaN values")
             
+            if progress_callback:
+                progress_callback(0.14, f"Data cleaned: {len(x)} valid points remaining")
+            
             # Perform minimum curvature interpolation
             if progress_callback:
-                progress_callback(0.15, "Starting minimum curvature interpolation...")
+                progress_callback(0.16, f"Starting minimum curvature interpolation ({grid_resolution}×{grid_resolution} grid)...")
             
             grid_X, grid_Y, grid_z = self.minimum_curvature_interpolation(
                 x, y, z, grid_resolution, max_iterations, tolerance, omega, progress_callback
@@ -599,28 +1015,36 @@ class GridInterpolator(ScriptInterface):
             # Apply boundary masking if enabled
             if enable_masking:
                 if progress_callback:
-                    progress_callback(0.92, "Applying boundary masking...")
+                    progress_callback(0.85, f"Applying boundary masking ({boundary_method})...")
                 
                 mask = self.create_boundary_mask(x, y, grid_X, grid_Y, boundary_method, buffer_distance)
                 grid_z = np.where(mask, grid_z, np.nan)
+                
+                if progress_callback:
+                    progress_callback(0.87, "Boundary masking complete")
             
             # Create temporary directory for outputs
+            if progress_callback:
+                progress_callback(0.88, "Preparing output generation...")
             temp_dir = Path(tempfile.mkdtemp())
             
             # Generate diagnostic plot if requested
             if generate_diagnostics:
                 if progress_callback:
-                    progress_callback(0.95, "Generating diagnostic plots...")
+                    progress_callback(0.90, "Generating diagnostic plots...")
                 
                 diagnostic_path = self.create_diagnostic_plot(
                     x, y, z, grid_X, grid_Y, grid_z, field_column, temp_dir
                 )
                 result.add_output_file(str(diagnostic_path), 'png', 'Interpolation diagnostic plots')
+                
+                if progress_callback:
+                    progress_callback(0.92, "Diagnostic plots complete")
             
             # Save grid data if requested
             if save_grid_data:
                 if progress_callback:
-                    progress_callback(0.97, "Saving grid data...")
+                    progress_callback(0.93, "Saving grid data to CSV...")
                 
                 # Create grid DataFrame
                 grid_df = pd.DataFrame({
@@ -635,10 +1059,13 @@ class GridInterpolator(ScriptInterface):
                 grid_csv_path = temp_dir / f'interpolated_grid_{field_column.replace(" ", "_").replace("[", "").replace("]", "")}.csv'
                 grid_df.to_csv(grid_csv_path, index=False)
                 result.add_output_file(str(grid_csv_path), 'csv', 'Interpolated grid data')
+                
+                if progress_callback:
+                    progress_callback(0.94, "Grid data saved to CSV")
             
             # Create raster layer for visualization
             if progress_callback:
-                progress_callback(0.99, "Creating raster layer...")
+                progress_callback(0.95, "Creating interpolated field raster layer...")
             
             # Calculate bounds for raster layer [min_x, min_y, max_x, max_y]
             bounds = [
@@ -647,6 +1074,14 @@ class GridInterpolator(ScriptInterface):
                 float(np.nanmax(grid_X)),  # east (max_x)
                 float(np.nanmax(grid_Y))   # north (max_y)
             ]
+            
+            # Create unique layer name based on input filename and timestamp
+            timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+            if input_file_path:
+                input_filename = Path(input_file_path).stem
+                raster_layer_name = f'{input_filename} - Interpolated {field_column} ({timestamp})'
+            else:
+                raster_layer_name = f'Interpolated {field_column} ({timestamp})'
             
             # Create raster layer data - must have 'grid' key for UXO Wizard
             raster_data = {
@@ -661,53 +1096,119 @@ class GridInterpolator(ScriptInterface):
                 data=raster_data,
                 style_info={},
                 metadata={
-                    'layer_name': f'Interpolated {field_column}',
+                    'layer_name': raster_layer_name,
                     'bounds': bounds  # Add bounds to metadata to help with layer creation
                 }
             )
             
-            # Add downsampled original data points as point layer
-            point_data = data[['Latitude [Decimal Degrees]', 'Longitude [Decimal Degrees]', field_column]].copy()
+            # Create contour layer as a second raster
+            if progress_callback:
+                progress_callback(0.96, "Creating contour raster layer...")
             
-            # Smart downsampling for map performance (preserves flight line structure)
-            max_points = 5000
-            if len(point_data) > max_points:
-                # Use systematic sampling to preserve flight line structure
-                step = len(point_data) // max_points
-                if step > 1:
-                    downsample_indices = np.arange(0, len(point_data), step)
-                    point_data = point_data.iloc[downsample_indices].copy()
-                    layer_name = f'Original Data Points (downsampled every {step} points)'
+            contour_data = self.create_contour_raster(grid_X, grid_Y, grid_z, bounds)
+            if contour_data is not None:
+                # Create unique contour layer name based on input filename
+                if input_file_path:
+                    contour_layer_name = f'{input_filename} - Contours {field_column} ({timestamp})'
                 else:
-                    layer_name = 'Original Data Points'
+                    contour_layer_name = f'Contours {field_column} ({timestamp})'
+                    
+                result.add_layer_output(
+                    layer_type='raster',
+                    data=contour_data,
+                    style_info={},
+                    metadata={
+                        'layer_name': contour_layer_name,
+                        'bounds': bounds
+                    }
+                )
+                if progress_callback:
+                    progress_callback(0.97, "Contour layer created successfully")
             else:
-                layer_name = 'Original Data Points'
+                if progress_callback:
+                    progress_callback(0.97, "Failed to create contour layer")
             
-            point_data = point_data.rename(columns={
-                'Latitude [Decimal Degrees]': 'latitude',
-                'Longitude [Decimal Degrees]': 'longitude',
-                field_column: 'value'
-            })
+            # Generate comprehensive analysis in /grid_analysis directory
+            if progress_callback:
+                progress_callback(0.98, "Generating comprehensive analysis (field plots, diagnostics, summary)...")
             
-            result.add_layer_output(
-                layer_type='point',
-                data=point_data,
-                style_info={},
-                metadata={
-                    'layer_name': layer_name,
-                    'color_field': 'value',
-                    'use_graduated_colors': True,
-                    'point_size': 2,
-                    'point_opacity': 0.8,
-                    'enable_clustering': False
-                }
+            analysis_dir = self.create_comprehensive_analysis(
+                data, grid_X, grid_Y, grid_z, field_column, input_file_path, temp_dir
             )
             
+            if analysis_dir:
+                # Add analysis directory to outputs
+                result.add_output_file(str(analysis_dir), 'directory', 'Comprehensive grid analysis')
+                if progress_callback:
+                    progress_callback(0.985, "Comprehensive analysis complete")
+            
+            # Add downsampled original data points as point layer (if enabled)
+            if include_original_points:
+                if progress_callback:
+                    progress_callback(0.99, "Creating original data points layer...")
+                
+                point_data = data[['Latitude [Decimal Degrees]', 'Longitude [Decimal Degrees]', field_column]].copy()
+            
+                # Smart downsampling for map performance (preserves flight line structure)
+                max_points = 5000
+                if len(point_data) > max_points:
+                    # Use systematic sampling to preserve flight line structure
+                    step = len(point_data) // max_points
+                    if step > 1:
+                        downsample_indices = np.arange(0, len(point_data), step)
+                        point_data = point_data.iloc[downsample_indices].copy()
+                        
+                        # Create unique point layer name based on input filename
+                        if input_file_path:
+                            point_layer_name = f'{input_filename} - Original Data Points (downsampled every {step} points) ({timestamp})'
+                        else:
+                            point_layer_name = f'Original Data Points (downsampled every {step} points) ({timestamp})'
+                            
+                        if progress_callback:
+                            progress_callback(0.992, f"Downsampled {len(data)} points to {len(point_data)} for map display")
+                    else:
+                        # Create unique point layer name based on input filename
+                        if input_file_path:
+                            point_layer_name = f'{input_filename} - Original Data Points ({timestamp})'
+                        else:
+                            point_layer_name = f'Original Data Points ({timestamp})'
+                else:
+                    # Create unique point layer name based on input filename
+                    if input_file_path:
+                        point_layer_name = f'{input_filename} - Original Data Points ({timestamp})'
+                    else:
+                        point_layer_name = f'Original Data Points ({timestamp})'
+                
+                point_data = point_data.rename(columns={
+                    'Latitude [Decimal Degrees]': 'latitude',
+                    'Longitude [Decimal Degrees]': 'longitude',
+                    field_column: 'value'
+                })
+                
+                result.add_layer_output(
+                    layer_type='point',
+                    data=point_data,
+                    style_info={},
+                    metadata={
+                        'layer_name': point_layer_name,
+                        'color_field': 'value',
+                        'use_graduated_colors': True,
+                        'point_size': 2,
+                        'point_opacity': 0.8,
+                        'enable_clustering': False
+                    }
+                )
+            
             if progress_callback:
-                progress_callback(1.0, "Grid interpolation complete")
+                progress_callback(0.995, "Finalizing processing results...")
+                
+            if progress_callback:
+                layers_created = 2 if contour_data is not None else 1
+                progress_callback(1.0, f"Grid interpolation complete! Created {layers_created} raster layer(s) + 1 point layer")
             
             # Add processing summary
             result.metadata.update({
+                'processor': 'magnetic',
                 'processing_method': 'minimum_curvature',
                 'grid_resolution': grid_resolution,
                 'iterations_used': 'converged' if max_iterations > 100 else str(max_iterations),

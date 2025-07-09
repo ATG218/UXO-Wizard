@@ -19,10 +19,11 @@ class ProcessingDialog(QDialog):
     # Signals
     layer_created = Signal(object)  # UXOLayer created during processing
     
-    def __init__(self, data: pd.DataFrame, parent=None, input_file_path: Optional[str] = None):
+    def __init__(self, data: pd.DataFrame, parent=None, input_file_path: Optional[str] = None, project_manager=None):
         super().__init__(parent)
         self.data = data
         self.input_file_path = input_file_path
+        self.project_manager = project_manager
         self.result: Optional[ProcessingResult] = None
         self.setup_ui()
         
@@ -35,7 +36,7 @@ class ProcessingDialog(QDialog):
         layout = QVBoxLayout()
         
         # Processing widget
-        self.processing_widget = ProcessingWidget()
+        self.processing_widget = ProcessingWidget(self.project_manager)
         self.processing_widget.set_data(self.data, input_file_path=self.input_file_path)
         self.processing_widget.processing_complete.connect(self.on_processing_complete)
         

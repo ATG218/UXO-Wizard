@@ -28,10 +28,11 @@ class ProcessingPipeline(QObject):
     error_occurred = Signal(str)
     layer_created = Signal(object)  # UXOLayer created during processing
     
-    def __init__(self):
+    def __init__(self, project_manager=None):
         super().__init__()
         self.processors: Dict[str, BaseProcessor] = {}
         self.current_input_file: Optional[str] = None  # Track current input file
+        self.project_manager = project_manager  # Reference to project manager for working directory
         
         # Try to create each processor and catch any import errors
         try:
@@ -231,13 +232,17 @@ class ProcessingPipeline(QObject):
         return output_path
     
     def _create_output_directory(self, result: ProcessingResult) -> str:
-        """Create and return output directory path"""
-        if result.input_file_path:
-            # Create processed/ directory next to input file
+        """Create and return output directory path - always use project working directory"""
+        # Use project working directory if available
+        if self.project_manager and self.project_manager.get_current_working_directory():
+            project_dir = self.project_manager.get_current_working_directory()
+            base_output_dir = os.path.join(project_dir, "processed")
+        elif result.input_file_path:
+            # Fallback: Create processed/ directory next to input file
             input_dir = os.path.dirname(result.input_file_path)
             base_output_dir = os.path.join(input_dir, "processed")
         else:
-            # Fallback to current working directory
+            # Last resort: current working directory
             base_output_dir = os.path.join(os.getcwd(), "processed")
         
         # Create processor-specific subdirectory
@@ -247,6 +252,7 @@ class ProcessingPipeline(QObject):
         # Create directories if they don't exist
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
+        logger.info(f"Processing output directory: {output_dir}")
         return output_dir
     
     def _generate_filename(self, result: ProcessingResult) -> str:

@@ -412,7 +412,10 @@ class UXOMapWidget(QWidget):
     def _array_to_heatmap_image(self, array: np.ndarray, layer_name: str) -> str:
         """Convert numpy array to base64 encoded heatmap image"""
         try:
-            # Normalize array to 0-1 range
+            # Preserve NaN mask for transparency
+            nan_mask = np.isnan(array)
+            
+            # Normalize array to 0-1 range (only valid values)
             array_min = np.nanmin(array)
             array_max = np.nanmax(array)
             if array_max == array_min:
@@ -420,12 +423,11 @@ class UXOMapWidget(QWidget):
             else:
                 normalized = (array - array_min) / (array_max - array_min)
             
-            # Replace NaN with 0 and ensure valid range
-            normalized = np.nan_to_num(normalized, nan=0.0)
+            # Keep NaN values as NaN for now, clip valid values
             normalized = np.clip(normalized, 0.0, 1.0)
             
             # Create gradient heatmap using matplotlib-style colormap
-            colored_array = self._apply_heatmap_colormap(normalized)
+            colored_array = self._apply_heatmap_colormap(normalized, nan_mask)
             
             # Convert to PIL Image
             try:
@@ -462,7 +464,7 @@ class UXOMapWidget(QWidget):
             logger.error(f"Error converting array to heatmap image: {e}")
             return None
     
-    def _apply_heatmap_colormap(self, normalized_array: np.ndarray) -> np.ndarray:
+    def _apply_heatmap_colormap(self, normalized_array: np.ndarray, nan_mask: np.ndarray = None) -> np.ndarray:
         """Apply viridis-like colormap to normalized array (0-1 range)"""
         # Create a viridis-like gradient: dark purple -> blue -> green -> yellow
         height, width = normalized_array.shape
@@ -480,7 +482,17 @@ class UXOMapWidget(QWidget):
         
         for i in range(height):
             for j in range(width):
+                # Handle NaN values (make them transparent)
+                if nan_mask is not None and nan_mask[i, j]:
+                    colored[i, j] = [0, 0, 0, 0]  # Fully transparent
+                    continue
+                    
                 value = normalized_array[i, j]
+                
+                # Skip NaN values that weren't caught by the mask
+                if np.isnan(value):
+                    colored[i, j] = [0, 0, 0, 0]  # Fully transparent
+                    continue
                 
                 # Find appropriate color stops
                 if value <= color_stops[0][0]:

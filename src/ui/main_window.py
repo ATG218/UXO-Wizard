@@ -268,7 +268,7 @@ class MainWindow(QMainWindow):
         # from qtpy.QtWidgets import QWidget as _QtEmptyWidget
         # self.data_dock.setTitleBarWidget(_QtEmptyWidget())
         self.data_dock.setFeatures(QDockWidget.DockWidgetMovable)
-        self.data_viewer = DataViewer()
+        self.data_viewer = DataViewer(self.project_manager)
         self.data_dock.setWidget(self.data_viewer)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.data_dock)
         
