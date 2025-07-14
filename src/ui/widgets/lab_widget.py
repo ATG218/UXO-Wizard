@@ -336,10 +336,10 @@ class LabWidget(QWidget):
             self.open_file(file_path)
             # Log the action for user feedback
             filename = os.path.basename(file_path)
-            if file_path.endswith(('.csv', '.txt', '.dat', '.json')):
-                self.log_activity(f"Opened '{filename}' in data viewer")
-            elif file_path.endswith('.py'):
+            if file_path.lower().endswith('.py'):
                 self.log_activity(f"Opened script '{filename}' for viewing")
+            elif file_path.lower().endswith(('.csv', '.txt', '.dat', '.json', '.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.tif')):
+                self.log_activity(f"Opened '{filename}' in data viewer")
             else:
                 self.log_activity(f"Opened '{filename}' with system default")
             
@@ -586,15 +586,15 @@ class LabWidget(QWidget):
     def open_file(self, file_path: str):
         """Open file with appropriate handler"""
         try:
-            if file_path.endswith('.py'):
+            if file_path.lower().endswith('.py'):
                 # For Python scripts, emit signal to open in main app
                 self.script_executed.emit(file_path)
                 self.log_activity(f"Opened script: {os.path.basename(file_path)}")
                 
-            elif file_path.endswith(('.csv', '.txt', '.dat', '.json')):
-                # For data files, emit signal to open in data viewer
+            elif file_path.lower().endswith(('.csv', '.txt', '.dat', '.json', '.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.tif')):
+                # For data and image files, emit signal to open in data viewer
                 self.file_selected.emit(file_path)
-                self.log_activity(f"Opened data file: {os.path.basename(file_path)}")
+                self.log_activity(f"Opened file in data viewer: {os.path.basename(file_path)}")
                 
             else:
                 # For other files, open with system default
