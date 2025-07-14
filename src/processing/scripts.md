@@ -266,6 +266,42 @@ The `ProcessingResult` object is crucial for communicating the outcome of your s
         )
         ```
 
+### Returning Plots
+
+Your script can generate and return Matplotlib plots for visualization in the UXO Wizard interface.
+
+1.  **Import `matplotlib`**: Make sure `matplotlib.pyplot` is imported.
+2.  **Create a Plot**: Generate your plot as you normally would, which creates a `Figure` object.
+3.  **Return the Figure**: Assign the `Figure` object to the `figure` attribute of your `ProcessingResult`.
+
+The application will automatically handle the returned plot, allowing the user to view it interactively or save it.
+
+**Example:**
+
+```python
+import matplotlib.pyplot as plt
+from ...base import ProcessingResult
+
+def run(data, parameters):
+    # Your data processing logic...
+    processed_df = data.copy()
+    processed_df['new_col'] = processed_df['some_col'] * 2
+
+    # 1. & 2. Create a plot
+    fig, ax = plt.subplots()
+    ax.plot(processed_df['timestamp'], processed_df['new_col'])
+    ax.set_title("My Processing Result")
+    fig.tight_layout()
+
+    # 3. Return the figure in the result
+    return ProcessingResult(
+        success=True,
+        data=processed_df,
+        figure=fig, # <-- Here is the plot
+        message="Processing complete with a plot."
+    )
+```
+
 ## 4. Enhanced Layer Generation System
 
 The UXO-Wizard now includes a powerful modular layer generation system that automatically converts your processing outputs into interactive map layers. This system provides universal layer creation methods that all processors inherit from the `BaseProcessor` class.

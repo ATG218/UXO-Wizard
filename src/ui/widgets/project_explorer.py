@@ -173,7 +173,7 @@ class ProjectExplorer(QWidget):
         self.model.setNameFilters([
             "*.csv", "*.txt", "*.dat", "*.xlsx", "*.xls",
             "*.json", "*.geojson", "*.shp", "*.tif", "*.tiff",
-            "*.png", "*.jpg", "*.jpeg", "*.uxo"  # UXO project files
+            "*.png", "*.jpg", "*.jpeg", "*.uxo", "*.mplplot" # UXO project and plot files
         ])
         self.model.setNameFilterDisables(False)  # Hide non-matching files
         

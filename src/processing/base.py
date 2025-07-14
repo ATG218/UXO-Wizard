@@ -5,6 +5,7 @@ Base classes for all data processors
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List, Callable
+from matplotlib.figure import Figure
 from PySide6.QtCore import Signal, QThread
 import pandas as pd
 from loguru import logger
@@ -22,6 +23,13 @@ try:
 except ImportError:
     logger.warning("Layer system not available - layer_types module not found")
     LAYER_SYSTEM_AVAILABLE = False
+    # Define dummy classes for type hints when layer system not available
+    GeometryType = str
+    LayerType = str
+    UXOLayer = object
+    LayerStyle = object
+    LayerSource = object
+    NORWEGIAN_CRS = "EPSG:25833"
 
 
 class ProcessingError(Exception):
@@ -65,6 +73,7 @@ class ProcessingResult:
     script_id: Optional[str] = None              # Which script was used
     output_files: List[OutputFile] = field(default_factory=list)      # All generated files
     layer_outputs: List[LayerOutput] = field(default_factory=list)    # Data for future layer system
+    figure: Optional[Figure] = None  # Matplotlib figure for direct display
     
     def __post_init__(self):
         if self.metadata is None:

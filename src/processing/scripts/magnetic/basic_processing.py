@@ -5,6 +5,7 @@ Basic magnetic data processing script
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, Optional, Callable
+import matplotlib.pyplot as plt
 
 from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError
 
@@ -41,6 +42,17 @@ class BasicMagneticProcessing(ScriptInterface):
                     'type': 'bool',
                     'description': 'Generate visualization files'
                 },
+                'generate_plot': {
+                    'value': True,
+                    'type': 'bool',
+                    'description': 'Generate an interactive plot'
+                },
+                'plot_type': {
+                    'value': '2D',
+                    'type': 'choice',
+                    'choices': ['2D', '3D'],
+                    'description': 'Type of plot to generate'
+                },
                 'layer_type': {
                     'value': 'point_data',
                     'type': 'choice',
@@ -75,6 +87,8 @@ class BasicMagneticProcessing(ScriptInterface):
             create_processed = params.get('processing_options', {}).get('create_processed_column', {}).get('value', True)
             calc_stats = params.get('processing_options', {}).get('calculate_statistics', {}).get('value', True)
             gen_viz = params.get('output_options', {}).get('generate_visualization', {}).get('value', False)
+            gen_plot = params.get('output_options', {}).get('generate_plot', {}).get('value', True)
+            plot_type = params.get('output_options', {}).get('plot_type', {}).get('value', '2D')
             layer_type = params.get('output_options', {}).get('layer_type', {}).get('value', 'point_data')
             
             if progress_callback:
@@ -112,6 +126,38 @@ class BasicMagneticProcessing(ScriptInterface):
                 'columns_processed': len(result_data.columns),
                 'parameters': params
             }
+
+            # Generate interactive plot if requested
+            if gen_plot:
+                numeric_cols = result_data.select_dtypes(include=[np.number]).columns
+                if len(numeric_cols) >= 2:
+                    if plot_type == '3D' and len(numeric_cols) >= 3:
+                        # Create 3D scatter plot
+                        fig = plt.figure(figsize=(10, 8))
+                        ax = fig.add_subplot(111, projection='3d')
+                        
+                        # Use first 3 numeric columns for 3D plot
+                        x_col, y_col, z_col = numeric_cols[:3]
+                        scatter = ax.scatter(result_data[x_col], result_data[y_col], result_data[z_col], 
+                                           c=result_data[z_col], cmap='viridis', s=20, alpha=0.6)
+                        
+                        ax.set_xlabel(x_col)
+                        ax.set_ylabel(y_col)
+                        ax.set_zlabel(z_col)
+                        ax.set_title('3D Basic Processed Data')
+                        fig.colorbar(scatter, ax=ax, shrink=0.5, aspect=5)
+                        
+                    else:
+                        # Create 2D line plot
+                        fig, ax = plt.subplots()
+                        ax.plot(result_data[numeric_cols[0]], result_data[numeric_cols[1]])
+                        ax.set_xlabel(numeric_cols[0])
+                        ax.set_ylabel(numeric_cols[1])
+                        ax.set_title('2D Basic Processed Data Plot')
+                        ax.grid(True)
+                    
+                    fig.tight_layout()
+                    result.figure = fig
             
             # Generate visualization layers if requested
             if gen_viz and result_data is not None and not result_data.empty:
@@ -243,7 +289,6 @@ class BasicMagneticProcessing(ScriptInterface):
                 },
                 metadata={
                     'description': f'Subsampled overview ({len(subsampled)} points)',
-                    'coordinate_columns': coord_cols,
                     'original_points': len(data),
                     'subsampled_points': len(subsampled),
                     'data_type': 'subsampled_overview'

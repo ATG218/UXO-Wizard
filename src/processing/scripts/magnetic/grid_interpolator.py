@@ -128,6 +128,17 @@ class GridInterpolator(ScriptInterface):
                     'value': False,
                     'type': 'bool',
                     'description': 'Include original data points as a map layer'
+                },
+                'generate_interactive_plot': {
+                    'value': True,
+                    'type': 'bool',
+                    'description': 'Generate an interactive plot for the data viewer'
+                },
+                'plot_type': {
+                    'value': '2D',
+                    'type': 'choice',
+                    'choices': ['2D'],
+                    'description': 'Type of diagnostic plot to generate'
                 }
             }
         }
@@ -498,7 +509,7 @@ class GridInterpolator(ScriptInterface):
         
         return max_change
     
-    def create_diagnostic_plot(self, x, y, z, grid_X, grid_Y, grid_z, field_name, output_dir):
+    def create_diagnostic_plot(self, x, y, z, grid_X, grid_Y, grid_z, field_name, output_dir, save_png=True):
         """Create diagnostic plots for interpolation quality assessment"""
         
         # Create figure with subplots
@@ -546,12 +557,14 @@ class GridInterpolator(ScriptInterface):
         
         plt.tight_layout()
         
-        # Save diagnostic plot
-        diagnostic_path = output_dir / f'interpolation_diagnostics_{field_name}.png'
-        plt.savefig(diagnostic_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        return diagnostic_path
+        if save_png:
+            # Save diagnostic plot
+            diagnostic_path = output_dir / f'interpolation_diagnostics_{field_name}.png'
+            plt.savefig(diagnostic_path, dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            return diagnostic_path, None
+        else:
+            return None, fig # Return the figure object if not saving
     
     def create_contour_raster(self, grid_X, grid_Y, grid_z, bounds):
         """Create a contour lines raster overlay using matplotlib like the original script"""
@@ -927,6 +940,70 @@ Processing Information:
         except Exception:
             pass
     
+    def create_interactive_plot(self, x, y, z, grid_X, grid_Y, grid_z, field_column, plot_type='2D'):
+        """Create an interactive plot for the data viewer"""
+        try:
+            if plot_type == '3D':
+                # Create 3D surface plot
+                fig = plt.figure(figsize=(12, 9))
+                ax = fig.add_subplot(111, projection='3d')
+                
+                # Create 3D surface plot
+                surf = ax.plot_surface(grid_X, grid_Y, grid_z, cmap='RdYlBu_r', alpha=0.7)
+                
+                # Add original data points as scatter
+                ax.scatter(x, y, z, c='red', s=1, alpha=0.6)
+                
+                ax.set_xlabel('Longitude')
+                ax.set_ylabel('Latitude')
+                ax.set_zlabel(f'{field_column} [nT]')
+                ax.set_title(f'3D Grid Interpolation - {field_column}')
+                
+                # Add colorbar
+                fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5)
+                
+            else:
+                # Create 2D contour plot
+                fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+                fig.suptitle(f'Grid Interpolation Results - {field_column}', fontsize=16)
+                
+                # Plot 1: Original data
+                im1 = axes[0, 0].scatter(x, y, c=z, cmap='RdYlBu_r', s=1, alpha=0.7)
+                axes[0, 0].set_title('Original Data Points')
+                axes[0, 0].set_xlabel('Longitude')
+                axes[0, 0].set_ylabel('Latitude')
+                axes[0, 0].set_aspect('equal')
+                plt.colorbar(im1, ax=axes[0, 0])
+                
+                # Plot 2: Interpolated field
+                im2 = axes[0, 1].contourf(grid_X, grid_Y, grid_z, levels=50, cmap='RdYlBu_r')
+                axes[0, 1].set_title('Interpolated Field')
+                axes[0, 1].set_xlabel('Longitude')
+                axes[0, 1].set_ylabel('Latitude')
+                axes[0, 1].set_aspect('equal')
+                plt.colorbar(im2, ax=axes[0, 1])
+                
+                # Plot 3: Contour lines
+                axes[1, 0].contour(grid_X, grid_Y, grid_z, levels=20, colors='black', linewidths=0.5)
+                axes[1, 0].set_title('Contour Lines')
+                axes[1, 0].set_xlabel('Longitude')
+                axes[1, 0].set_ylabel('Latitude')
+                axes[1, 0].set_aspect('equal')
+                
+                # Plot 4: Combined view
+                axes[1, 1].contourf(grid_X, grid_Y, grid_z, levels=50, cmap='RdYlBu_r', alpha=0.7)
+                axes[1, 1].scatter(x, y, c=z, cmap='RdYlBu_r', s=0.5, alpha=0.8)
+                axes[1, 1].set_title('Combined View')
+                axes[1, 1].set_xlabel('Longitude')
+                axes[1, 1].set_ylabel('Latitude')
+                axes[1, 1].set_aspect('equal')
+            
+            plt.tight_layout()
+            return fig
+            
+        except Exception as e:
+            raise ProcessingError(f"Error creating interactive plot: {e}")
+    
     def execute(self, data: pd.DataFrame, params: Dict[str, Any], 
                 progress_callback: Optional[Callable] = None, input_file_path: Optional[str] = None) -> ProcessingResult:
         """
@@ -973,6 +1050,8 @@ Processing Information:
             generate_diagnostics = output_params.get('generate_diagnostics', {}).get('value', True)
             save_grid_data = output_params.get('save_grid_data', {}).get('value', True)
             include_original_points = output_params.get('include_original_points', {}).get('value', False)
+            generate_interactive_plot = output_params.get('generate_interactive_plot', {}).get('value', True)
+            plot_type = output_params.get('plot_type', {}).get('value', '2D')
             
             if progress_callback:
                 progress_callback(0.06, "Detecting magnetic field column...")
@@ -1040,6 +1119,19 @@ Processing Information:
                 
                 if progress_callback:
                     progress_callback(0.92, "Diagnostic plots complete")
+            
+            # Generate interactive plot if requested
+            if generate_interactive_plot:
+                if progress_callback:
+                    progress_callback(0.925, f"Generating interactive {plot_type} plot...")
+                
+                interactive_figure = self.create_interactive_plot(
+                    x, y, z, grid_X, grid_Y, grid_z, field_column, plot_type
+                )
+                if interactive_figure:
+                    result.figure = interactive_figure
+                    if progress_callback:
+                        progress_callback(0.93, f"Interactive {plot_type} plot generated")
             
             # Save grid data if requested
             if save_grid_data:

@@ -174,18 +174,23 @@ class ProcessingPipeline(QObject):
             
     def _on_processing_finished(self, result: ProcessingResult):
         """Handle processing completion with auto file generation"""
-        if result.success and result.data is not None:
+        logger.info(f"Pipeline processing finished - success: {result.success}, has_data: {result.data is not None}, has_figure: {result.figure is not None}")
+        if result.success:
             try:
                 # Set input file path in result
                 result.input_file_path = self.current_input_file
                 
-                # Generate output file automatically
-                output_path = self._generate_output_file(result)
-                result.output_file_path = output_path
-                logger.info(f"Processed data saved to: {output_path}")
+                # Generate output file automatically (only if there's data)
+                if result.data is not None:
+                    output_path = self._generate_output_file(result)
+                    result.output_file_path = output_path
+                    logger.info(f"Processed data saved to: {output_path}")
+                    
+                    # Generate metadata sidecar file
+                    self._generate_metadata_file(result)
                 
-                # Generate metadata sidecar file
-                self._generate_metadata_file(result)
+                # Auto-save any generated plots (independent of data)
+                self._save_plot_files(result)
                 
             except Exception as e:
                 logger.error(f"Failed to generate output file: {str(e)}")
@@ -328,3 +333,62 @@ class ProcessingPipeline(QObject):
             
         logger.debug(f"Generated metadata file: {metadata_path}")
         return str(metadata_path) 
+    
+    def _save_plot_files(self, result: ProcessingResult):
+        """Automatically save any generated matplotlib figures"""
+        logger.info("_save_plot_files called")
+        if not result.figure:
+            logger.info("No figure found in result - skipping plot save")
+            return
+        
+        logger.info(f"Found figure in result - proceeding with auto-save")
+            
+        try:
+            # Create output directory structure (same as data files)
+            output_dir = self._create_output_directory(result)
+            
+            # Generate plot filename based on processing info
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            script_name = result.processing_script or "plot"
+            processor_type = result.metadata.get('processor', 'unknown')
+            
+            # Get base name from input file if available
+            if result.input_file_path:
+                input_name = Path(result.input_file_path).stem
+                base_name = f"{input_name}_{script_name}_{timestamp}"
+            else:
+                base_name = f"{processor_type}_{script_name}_{timestamp}"
+            
+            # Save as both interactive .mplplot and static .png
+            plot_files = []
+            
+            # Save interactive plot file (.mplplot)
+            mplplot_path = Path(output_dir) / f"{base_name}.mplplot"
+            try:
+                import pickle
+                with open(mplplot_path, 'wb') as f:
+                    pickle.dump(result.figure, f)
+                plot_files.append(('mplplot', str(mplplot_path), 'Interactive matplotlib plot'))
+                logger.info(f"Saved interactive plot: {mplplot_path}")
+            except Exception as e:
+                logger.warning(f"Failed to save interactive plot: {e}")
+            
+            # Save static PNG file
+            png_path = Path(output_dir) / f"{base_name}.png"
+            try:
+                result.figure.savefig(png_path, dpi=300, bbox_inches='tight')
+                plot_files.append(('png', str(png_path), 'Static plot image'))
+                logger.info(f"Saved static plot: {png_path}")
+            except Exception as e:
+                logger.warning(f"Failed to save static plot: {e}")
+            
+            # Add plot files to result outputs
+            for file_type, file_path, description in plot_files:
+                result.add_output_file(file_path, file_type, description)
+            
+            logger.info(f"Successfully auto-saved {len(plot_files)} plot files")
+                
+        except Exception as e:
+            logger.error(f"Failed to save plot files: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")

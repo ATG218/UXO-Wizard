@@ -653,29 +653,49 @@ class UXOMapWidget(QWidget):
             
     def center_default(self):
         """Center map on default location (Tarva island)"""
-        self.map.setView([63.8167, 9.3667], 12)
-        logger.info("Map centered on Tarva island")
+        try:
+            if hasattr(self, 'map') and self.map is not None:
+                self.map.setView([63.8167, 9.3667], 12)
+                logger.info("Map centered on Tarva island")
+            else:
+                logger.debug("Map not yet initialized, cannot center")
+        except Exception as e:
+            logger.warning(f"Error centering map: {e}")
         
     def zoom_to_data(self):
         """Zoom to the extent of all data layers"""
-        bounds = self.layer_manager.get_global_bounds()
-        if bounds:
-            # Convert to Leaflet bounds format
-            sw = [bounds[1], bounds[0]]  # [lat, lon]
-            ne = [bounds[3], bounds[2]]  # [lat, lon]
-            self.map.fitBounds([sw, ne])
-            logger.info(f"Zoomed to data extent: {bounds}")
-        else:
-            logger.warning("No data bounds available")
+        try:
+            if not hasattr(self, 'map') or self.map is None:
+                logger.debug("Map not yet initialized, cannot zoom to data")
+                return
+                
+            bounds = self.layer_manager.get_global_bounds()
+            if bounds:
+                # Convert to Leaflet bounds format
+                sw = [bounds[1], bounds[0]]  # [lat, lon]
+                ne = [bounds[3], bounds[2]]  # [lat, lon]
+                self.map.fitBounds([sw, ne])
+                logger.info(f"Zoomed to data extent: {bounds}")
+            else:
+                logger.warning("No data bounds available")
+        except Exception as e:
+            logger.warning(f"Error zooming to data: {e}")
             
     def zoom_to_layer(self, layer_name: str):
         """Zoom to specific layer extent"""
-        layer = self.layer_manager.get_layer(layer_name)
-        if layer and layer.bounds:
-            sw = [layer.bounds[1], layer.bounds[0]]
-            ne = [layer.bounds[3], layer.bounds[2]]
-            self.map.fitBounds([sw, ne])
-            logger.info(f"Zoomed to layer '{layer_name}'")
+        try:
+            if not hasattr(self, 'map') or self.map is None:
+                logger.debug("Map not yet initialized, cannot zoom to layer")
+                return
+                
+            layer = self.layer_manager.get_layer(layer_name)
+            if layer and layer.bounds:
+                sw = [layer.bounds[1], layer.bounds[0]]
+                ne = [layer.bounds[3], layer.bounds[2]]
+                self.map.fitBounds([sw, ne])
+                logger.info(f"Zoomed to layer '{layer_name}'")
+        except Exception as e:
+            logger.warning(f"Error zooming to layer '{layer_name}': {e}")
         
     def toggle_measure(self, checked):
         """Toggle measurement tool"""
@@ -813,14 +833,27 @@ class UXOMapWidget(QWidget):
         
     def center_on_data(self, bounds):
         """Center map on data bounds (compatibility method)"""
-        if bounds and len(bounds) == 4:
-            sw = [bounds[1], bounds[0]]  # [lat, lon]
-            ne = [bounds[3], bounds[2]]  # [lat, lon]
-            self.map.fitBounds([sw, ne])
+        try:
+            if not hasattr(self, 'map') or self.map is None:
+                logger.debug("Map not yet initialized, cannot center on data")
+                return
+                
+            if bounds and len(bounds) == 4:
+                sw = [bounds[1], bounds[0]]  # [lat, lon]
+                ne = [bounds[3], bounds[2]]  # [lat, lon]
+                self.map.fitBounds([sw, ne])
+        except Exception as e:
+            logger.warning(f"Error centering on data: {e}")
             
     def set_map_center(self, lat: float, lon: float, zoom: int = 6):
         """Set map center to specific coordinates (compatibility method)"""
-        self.map.setView([lat, lon], zoom)
+        try:
+            if hasattr(self, 'map') and self.map is not None:
+                self.map.setView([lat, lon], zoom)
+            else:
+                logger.debug("Map not yet initialized, cannot set center")
+        except Exception as e:
+            logger.warning(f"Error setting map center: {e}")
         
     def add_marker(self, lat: float, lon: float, popup_text: str = "", color: str = "blue"):
         """Add a single marker to the map (compatibility method)"""
@@ -902,78 +935,115 @@ class UXOMapWidget(QWidget):
             
             // Layer group on the map to manage visibility
             if (!window.uxoMapLayerGroup) {
-                window.uxoMapLayerGroup = L.layerGroup().addTo(map);
+                // Check if map is properly initialized before adding layer group
+                if (typeof map !== 'undefined' && map !== null) {
+                    window.uxoMapLayerGroup = L.layerGroup().addTo(map);
+                } else {
+                    console.warn('Map not ready, deferring layer group creation');
+                    // Don't use return at top level - just skip the initialization
+                }
             }
             
             // --- Core Layer Functions ---
             
             function showUxoLayer(layerName) {
-                if (window.uxoMapLayers[layerName]) {
-                    if (!window.uxoMapLayerGroup.hasLayer(window.uxoMapLayers[layerName])) {
-                        window.uxoMapLayerGroup.addLayer(window.uxoMapLayers[layerName]);
-                        console.log('Showing layer:', layerName);
+                try {
+                    if (!window.uxoMapLayers || !window.uxoMapLayerGroup) {
+                        console.warn('Layer management not ready for:', layerName);
+                        return;
                     }
-                } else {
-                    console.warn('Cannot show layer - not found:', layerName);
+                    
+                    if (window.uxoMapLayers[layerName]) {
+                        if (!window.uxoMapLayerGroup.hasLayer(window.uxoMapLayers[layerName])) {
+                            window.uxoMapLayerGroup.addLayer(window.uxoMapLayers[layerName]);
+                            console.log('Showing layer:', layerName);
+                        }
+                    } else {
+                        console.warn('Cannot show layer - not found:', layerName);
+                    }
+                } catch (error) {
+                    console.error('Error showing layer:', layerName, error);
                 }
             }
             
             function hideUxoLayer(layerName) {
-                if (window.uxoMapLayers[layerName]) {
-                    if (window.uxoMapLayerGroup.hasLayer(window.uxoMapLayers[layerName])) {
-                        window.uxoMapLayerGroup.removeLayer(window.uxoMapLayers[layerName]);
-                        console.log('Hiding layer:', layerName);
+                try {
+                    if (!window.uxoMapLayers || !window.uxoMapLayerGroup) {
+                        console.warn('Layer management not ready for:', layerName);
+                        return;
                     }
-                } else {
-                    console.warn('Cannot hide layer - not found:', layerName);
+                    
+                    if (window.uxoMapLayers[layerName]) {
+                        if (window.uxoMapLayerGroup.hasLayer(window.uxoMapLayers[layerName])) {
+                            window.uxoMapLayerGroup.removeLayer(window.uxoMapLayers[layerName]);
+                            console.log('Hiding layer:', layerName);
+                        }
+                    } else {
+                        console.warn('Cannot hide layer - not found:', layerName);
+                    }
+                } catch (error) {
+                    console.error('Error hiding layer:', layerName, error);
                 }
             }
             
             function removeUxoLayer(layerName) {
-                hideUxoLayer(layerName);
-                if (window.uxoMapLayers[layerName]) {
-                    delete window.uxoMapLayers[layerName];
-                    console.log('Removed layer from store:', layerName);
+                try {
+                    hideUxoLayer(layerName);
+                    if (window.uxoMapLayers && window.uxoMapLayers[layerName]) {
+                        delete window.uxoMapLayers[layerName];
+                        console.log('Removed layer from store:', layerName);
+                    }
+                } catch (error) {
+                    console.error('Error removing layer:', layerName, error);
                 }
             }
             
             function setUxoLayerOpacity(layerName, opacity) {
-                if (window.uxoMapLayers[layerName]) {
-                    const layer = window.uxoMapLayers[layerName];
+                try {
+                    if (!window.uxoMapLayers) {
+                        console.warn('Layer management not ready for opacity change:', layerName);
+                        return;
+                    }
                     
-                    // For layers with a setOpacity method (ImageOverlay, TileLayer)
-                    if (typeof layer.setOpacity === 'function') {
-                        layer.setOpacity(opacity);
-                    } 
-                    // For vector layers (GeoJSON)
-                    else if (typeof layer.setStyle === 'function') {
-                        layer.setStyle({
-                            opacity: opacity,
-                            fillOpacity: opacity * 0.8 // Adjust fill opacity relative to main opacity
-                        });
-                    }
-                    // For individual markers that don't have a group setStyle
-                    else if (layer.eachLayer) {
-                         layer.eachLayer(function(subLayer) {
-                            if (typeof subLayer.setOpacity === 'function') {
-                                subLayer.setOpacity(opacity);
-                                if (typeof subLayer.setStyle === 'function') {
-                                     subLayer.setStyle({ fillOpacity: opacity * 0.8 });
+                    if (window.uxoMapLayers[layerName]) {
+                        const layer = window.uxoMapLayers[layerName];
+                        
+                        // For layers with a setOpacity method (ImageOverlay, TileLayer)
+                        if (typeof layer.setOpacity === 'function') {
+                            layer.setOpacity(opacity);
+                        } 
+                        // For vector layers (GeoJSON)
+                        else if (typeof layer.setStyle === 'function') {
+                            layer.setStyle({
+                                opacity: opacity,
+                                fillOpacity: opacity * 0.8 // Adjust fill opacity relative to main opacity
+                            });
+                        }
+                        // For individual markers that don't have a group setStyle
+                        else if (layer.eachLayer) {
+                             layer.eachLayer(function(subLayer) {
+                                if (typeof subLayer.setOpacity === 'function') {
+                                    subLayer.setOpacity(opacity);
+                                    if (typeof subLayer.setStyle === 'function') {
+                                         subLayer.setStyle({ fillOpacity: opacity * 0.8 });
+                                    }
+                                } else if (typeof subLayer.setStyle === 'function') {
+                                    subLayer.setStyle({
+                                        opacity: opacity,
+                                        fillOpacity: opacity * 0.8
+                                    });
                                 }
-                            } else if (typeof subLayer.setStyle === 'function') {
-                                subLayer.setStyle({
-                                    opacity: opacity,
-                                    fillOpacity: opacity * 0.8
-                                });
-                            }
-                        });
+                            });
+                        }
+                         else {
+                            console.warn('Layer does not support opacity change:', layerName, layer);
+                        }
+                        console.log(`Set opacity for ${layerName} to ${opacity}`);
+                    } else {
+                        console.warn('Cannot set opacity - layer not found:', layerName);
                     }
-                     else {
-                        console.warn('Layer does not support opacity change:', layerName, layer);
-                    }
-                    console.log(`Set opacity for ${layerName} to ${opacity}`);
-                } else {
-                    console.warn('Cannot set opacity - layer not found:', layerName);
+                } catch (error) {
+                    console.error('Error setting layer opacity:', layerName, error);
                 }
             }
         """
@@ -982,14 +1052,30 @@ class UXOMapWidget(QWidget):
 
     def zoom_to_visible_layers(self):
         """Zoom to the extent of all visible data layers"""
-        bounds = self.layer_manager.get_visible_bounds()
-        if bounds:
-            # Convert to Leaflet bounds format: [[south, west], [north, east]]
-            sw = [bounds[1], bounds[0]]
-            ne = [bounds[3], bounds[2]]
-            # Use runJavaScript for robustness, bypassing the pyqtlet2 wrapper
-            js_command = f"{self.map.jsName}.fitBounds([[{sw[0]}, {sw[1]}], [{ne[0]}, {ne[1]}]]);"
-            self.map_widget.page.runJavaScript(js_command)
-            logger.info(f"Zoomed to visible data extent: {bounds}")
-        else:
-            logger.info("No visible layers with bounds to zoom to.")
+        try:
+            # Check if map is properly initialized
+            if not hasattr(self, 'map') or self.map is None:
+                logger.debug("Map not yet initialized, skipping zoom to visible layers")
+                return
+                
+            bounds = self.layer_manager.get_visible_bounds()
+            if bounds:
+                # Convert to Leaflet bounds format: [[south, west], [north, east]]
+                sw = [bounds[1], bounds[0]]
+                ne = [bounds[3], bounds[2]]
+                
+                # Use safe JavaScript execution with error handling
+                js_command = f"""
+                if (typeof map !== 'undefined' && map && map.fitBounds) {{
+                    map.fitBounds([[{sw[0]}, {sw[1]}], [{ne[0]}, {ne[1]}]]);
+                    console.log('Zoomed to visible data extent');
+                }} else {{
+                    console.warn('Map not ready for zoom operation');
+                }}
+                """
+                self.map_widget.page.runJavaScript(js_command)
+                logger.info(f"Zoomed to visible data extent: {bounds}")
+            else:
+                logger.info("No visible layers with bounds to zoom to.")
+        except Exception as e:
+            logger.warning(f"Error zooming to visible layers: {e}")

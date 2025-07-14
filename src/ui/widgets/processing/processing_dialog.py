@@ -1,13 +1,15 @@
 """
 Processing Dialog for UXO Wizard - Modal dialog for data processing
 """
-
+import os
+import pickle
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QDialogButtonBox
+    QDialog, QVBoxLayout, QDialogButtonBox, QMessageBox, QFileDialog
 )
 from PySide6.QtCore import Qt, Signal
 import pandas as pd
 from typing import Optional
+from matplotlib.figure import Figure
 
 from .processing_widget import ProcessingWidget
 from ....processing import ProcessingResult
@@ -18,7 +20,8 @@ class ProcessingDialog(QDialog):
     
     # Signals
     layer_created = Signal(object)  # UXOLayer created during processing
-    
+    plot_generated = Signal(Figure, str) # Figure, title
+
     def __init__(self, data: pd.DataFrame, parent=None, input_file_path: Optional[str] = None, project_manager=None):
         super().__init__(parent)
         self.data = data
@@ -65,7 +68,40 @@ class ProcessingDialog(QDialog):
             )
             self.button_box.accepted.connect(self.accept)
             self.button_box.rejected.connect(self.reject)
-            
+
+            # Handle generated plot if it exists
+            if result.figure:
+                self.handle_generated_plot(result.figure)
+
+    def handle_generated_plot(self, figure: Figure):
+        # Automatically show the plot in data viewer - no dialog needed
+        # The pipeline already auto-saves plots to the processed directory
+        self.plot_generated.emit(figure, "Processing Result Plot")
+
+    def save_plot(self, figure: Figure):
+        # Default to the 'processed/' folder if project is open
+        start_dir = ""
+        if self.project_manager:
+            proj_dir = self.project_manager.get_current_working_directory()
+            if proj_dir:
+                start_dir = os.path.join(proj_dir, "processed")
+                os.makedirs(start_dir, exist_ok=True)
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Plot",
+            start_dir,
+            "Matplotlib Plots (*.mplplot)"
+        )
+
+        if filepath:
+            try:
+                with open(filepath, 'wb') as f:
+                    pickle.dump(figure, f)
+                QMessageBox.information(self, "Success", f"Plot saved to:{filepath}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save plot: {str(e)}")
+
     def get_result(self) -> Optional[ProcessingResult]:
         """Get the processing result"""
         return self.result 
