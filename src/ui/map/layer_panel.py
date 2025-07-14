@@ -20,6 +20,98 @@ from .layer_manager import LayerManager
 from .layer_types import UXOLayer, LayerStyle, LayerType
 
 
+class GroupItemWidget(QFrame):
+    """A widget to represent a collapsible group of layers."""
+    def __init__(self, group_name: str, parent=None):
+        super().__init__(parent)
+        self.group_name = group_name
+        self.is_expanded = True
+        self.layer_widgets: List[LayerItemWidget] = []
+
+        self.setFrameShape(QFrame.NoFrame)
+        self.setObjectName("groupItem")
+        self.setStyleSheet("""
+            #groupItem {
+                background-color: transparent;
+                border-bottom: 1px solid #333;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.header_widget = QWidget()
+        self.header_widget.setObjectName("groupHeader")
+        self.header_widget.setStyleSheet("""
+            #groupHeader {
+                background-color: #2a2a2a;
+                border-bottom: 1px solid #333;
+            }
+            #groupHeader:hover {
+                background-color: #383838;
+            }
+        """)
+        self.header_widget.mousePressEvent = self._toggle_expansion
+
+        header_layout = QHBoxLayout(self.header_widget)
+        header_layout.setContentsMargins(8, 6, 8, 6)
+        header_layout.setSpacing(6)
+
+        self.arrow_label = QLabel()
+        self.arrow_label.setFixedWidth(10)
+
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(10)
+        self.title_label = QLabel(self.group_name)
+        self.title_label.setFont(title_font)
+        
+        self.item_count_label = QLabel("")
+        count_font = QFont()
+        count_font.setPointSize(9)
+        self.item_count_label.setFont(count_font)
+        self.item_count_label.setStyleSheet("color: #888;")
+
+        header_layout.addWidget(self.arrow_label)
+        header_layout.addWidget(self.title_label)
+        header_layout.addStretch()
+        header_layout.addWidget(self.item_count_label)
+
+        self.layer_container = QWidget()
+        self.layer_container_layout = QVBoxLayout(self.layer_container)
+        self.layer_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.layer_container_layout.setSpacing(1)
+
+        layout.addWidget(self.header_widget)
+        layout.addWidget(self.layer_container)
+
+        self._update_arrow()
+
+    def _toggle_expansion(self, event=None):
+        self.is_expanded = not self.is_expanded
+        self.layer_container.setVisible(self.is_expanded)
+        self._update_arrow()
+
+    def _update_arrow(self):
+        self.arrow_label.setText("▼" if self.is_expanded else "►")
+        
+    def _update_item_count(self):
+        count = len(self.layer_widgets)
+        self.item_count_label.setText(f"({count})")
+
+    def add_layer_widget(self, widget: 'LayerItemWidget'):
+        self.layer_widgets.append(widget)
+        self.layer_container_layout.addWidget(widget)
+        self._update_item_count()
+
+    def remove_layer_widget(self, widget: 'LayerItemWidget'):
+        if widget in self.layer_widgets:
+            self.layer_widgets.remove(widget)
+            self.layer_container_layout.removeWidget(widget)
+            self._update_item_count()
+
+
 class LayerItemWidget(QWidget):
     """Modern layer item widget with clean design"""
     
@@ -219,6 +311,7 @@ class ModernLayerControlPanel(QWidget):
         super().__init__()
         self.layer_manager = layer_manager
         self.layer_widgets: Dict[str, LayerItemWidget] = {}
+        self.group_widgets: Dict[str, GroupItemWidget] = {}  # Don't pre-create
         self.current_layer = None
         
         self.setup_ui()
@@ -289,12 +382,43 @@ class ModernLayerControlPanel(QWidget):
         self.layers_container = QWidget()
         self.layers_layout = QVBoxLayout(self.layers_container)
         self.layers_layout.setContentsMargins(0, 0, 0, 0)
-        self.layers_layout.setSpacing(1)
+        self.layers_layout.setSpacing(0)
         self.layers_layout.addStretch()  # Push items to top
+
+        # Create initial group widgets
+        for group_name in self.layer_manager.layer_groups.keys():
+            self._create_group_widget(group_name)
         
         scroll.setWidget(self.layers_container)
         layout.addWidget(scroll)
         
+    def _create_group_widget(self, group_name: str) -> GroupItemWidget:
+        """Creates and registers a group widget if it doesn't exist, but does not add to layout until needed."""
+        if group_name in self.group_widgets:
+            return self.group_widgets[group_name]
+
+        group_widget = GroupItemWidget(group_name)
+        group_widget.setStyleSheet("""
+            #groupItem {
+                background-color: #f8f9fa;
+                border-bottom: 1px solid #dee2e6;
+            }
+        """)
+        self.group_widgets[group_name] = group_widget
+        logger.debug(f"Created group widget for '{group_name}'")
+        return group_widget
+        
+    def _add_group_to_layout(self, group_widget: GroupItemWidget):
+        """Adds the group widget to the layout if not already present and shows it."""
+        if group_widget.parent() is None:  # Not yet added
+            self.layers_layout.insertWidget(self.layers_layout.count() - 1, group_widget)
+        group_widget.show()
+
+    def _remove_group_from_layout_if_empty(self, group_widget: GroupItemWidget):
+        """Hides the group if it has no layers, but keeps it in memory."""
+        if len(group_widget.layer_widgets) == 0:
+            group_widget.hide()
+
     def _create_controls(self, layout):
         """Create opacity and other controls"""
         controls = QFrame()
@@ -341,7 +465,18 @@ class ModernLayerControlPanel(QWidget):
     def _on_layer_added(self, layer: UXOLayer):
         """Handle layer addition"""
         if layer.name in self.layer_widgets:
-            return  # Already exists
+            logger.warning(f"Layer widget for '{layer.name}' already exists. Updating.")
+            return
+
+        # Determine the group for this layer
+        group_name = "Other"  # Default
+        for g, layers in self.layer_manager.layer_groups.items():
+            if layer.name in layers:
+                group_name = g
+                break
+        
+        # Get or create the group widget (but don't add to layout yet)
+        group_widget = self._create_group_widget(group_name)
             
         # Create layer widget
         layer_widget = LayerItemWidget(layer)
@@ -349,9 +484,12 @@ class ModernLayerControlPanel(QWidget):
         layer_widget.layer_selected.connect(self._on_layer_selected)
         layer_widget.layer_double_clicked.connect(self.zoom_to_layer.emit)
         
-        # Add to layout (insert before stretch)
-        self.layers_layout.insertWidget(self.layers_layout.count() - 1, layer_widget)
+        # Add to group widget and track it
+        group_widget.add_layer_widget(layer_widget)
         self.layer_widgets[layer.name] = layer_widget
+        
+        # Now add/show the group in the layout since it has content
+        self._add_group_to_layout(group_widget)
         
         # Context menu
         layer_widget.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -359,16 +497,21 @@ class ModernLayerControlPanel(QWidget):
             lambda pos, name=layer.name: self._show_context_menu(pos, name, layer_widget)
         )
         
-        logger.debug(f"Added layer widget for '{layer.name}'")
+        logger.debug(f"Added layer widget for '{layer.name}' to group '{group_name}'")
         
     def _on_layer_removed(self, layer_name: str):
         """Handle layer removal"""
         if layer_name in self.layer_widgets:
-            widget = self.layer_widgets[layer_name]
-            self.layers_layout.removeWidget(widget)
-            widget.deleteLater()
-            del self.layer_widgets[layer_name]
+            widget_to_remove = self.layer_widgets.pop(layer_name)
             
+            # Find which group it's in
+            for group_widget in self.group_widgets.values():
+                if widget_to_remove in group_widget.layer_widgets:
+                    group_widget.remove_layer_widget(widget_to_remove)
+                    widget_to_remove.deleteLater()
+                    self._remove_group_from_layout_if_empty(group_widget)
+                    break
+
             # Clear selection if this was selected
             if self.current_layer == layer_name:
                 self.current_layer = None
