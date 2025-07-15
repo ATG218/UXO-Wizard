@@ -268,6 +268,66 @@ class UXOMapWidget(QWidget):
             logger.error(f"Could not detect coordinate columns for layer '{layer.name}'")
             return False
 
+        # Check for graduated colors setup
+        style = layer.style
+        use_graduated_colors = style.use_graduated_colors and style.color_field
+        color_field = style.color_field
+        color_ramp = style.color_ramp or ["#000080", "#0000FF", "#00FFFF", "#00FF00", "#FFFF00", "#FF8000", "#FF0000"]
+        
+        # Calculate value range for graduated colors if needed
+        vmin = vmax = None
+        if use_graduated_colors and color_field in layer.data.columns:
+            # First check if vmin/vmax are provided in metadata (from gamma interpolator)
+            if (layer.metadata and 
+                isinstance(layer.metadata, dict) and 
+                'vmin' in layer.metadata and 
+                'vmax' in layer.metadata):
+                vmin = float(layer.metadata['vmin'])
+                vmax = float(layer.metadata['vmax'])
+                logger.info(f"Using metadata range for '{layer.name}': [{vmin:.2f}, {vmax:.2f}]")
+            else:
+                # Calculate statistical range like folium example
+                valid_values = layer.data[color_field].dropna()
+                if len(valid_values) > 0:
+                    mean_val = float(valid_values.mean())
+                    std_val = float(valid_values.std())
+                    # Use statistical scaling like folium example: mean ± 2σ
+                    vmin = mean_val - 2 * std_val
+                    vmax = mean_val + 2 * std_val
+                    logger.info(f"Calculated statistical range for '{layer.name}': field='{color_field}', range=[{vmin:.2f}, {vmax:.2f}]")
+
+        # Helper function to get color for a value (matches folium example logic)
+        def get_color_for_value(value):
+            if not use_graduated_colors or vmin is None or vmax is None:
+                return style.point_color
+            
+            if pd.isna(value):
+                return style.point_color
+            
+            # Normalize value to 0-1 range
+            if vmax != vmin:
+                normalized = (value - vmin) / (vmax - vmin)
+                normalized = max(0, min(1, normalized))  # Clamp to [0,1]
+            else:
+                normalized = 0.5
+            
+            # Map normalized value to color ramp using folium-style discrete ranges
+            # This matches the logic from the folium example
+            if normalized < 0.167:  # 0 to 1/6
+                return color_ramp[0] if len(color_ramp) > 0 else "#000080"
+            elif normalized < 0.333:  # 1/6 to 2/6
+                return color_ramp[1] if len(color_ramp) > 1 else "#0000FF"
+            elif normalized < 0.5:  # 2/6 to 3/6
+                return color_ramp[2] if len(color_ramp) > 2 else "#00FFFF"
+            elif normalized < 0.667:  # 3/6 to 4/6
+                return color_ramp[3] if len(color_ramp) > 3 else "#00FF00"
+            elif normalized < 0.833:  # 4/6 to 5/6
+                return color_ramp[4] if len(color_ramp) > 4 else "#FFFF00"
+            elif normalized < 0.95:  # 5/6 to 95%
+                return color_ramp[5] if len(color_ramp) > 5 else "#FF8000"
+            else:  # 95% to 100% (extreme high values)
+                return color_ramp[-1] if len(color_ramp) > 0 else "#FF0000"
+
         # Convert DataFrame to GeoJSON FeatureCollection
         features = []
         for _, row in layer.data.iterrows():
@@ -282,6 +342,12 @@ class UXOMapWidget(QWidget):
                         properties[key] = None
                     elif isinstance(value, (datetime, pd.Timestamp)):
                         properties[key] = value.isoformat()
+
+                # Add color information to properties for graduated colors
+                if use_graduated_colors and color_field in properties:
+                    properties['_point_color'] = get_color_for_value(properties[color_field])
+                else:
+                    properties['_point_color'] = style.point_color
 
                 feature = {
                     "type": "Feature",
@@ -305,28 +371,45 @@ class UXOMapWidget(QWidget):
             "features": features
         })
 
-        # We can't serialize functions in JSON, so we build the options object in JS
-        style = layer.style
+        # Build JavaScript for layer creation with graduated colors support
         layer_name_js = json.dumps(layer.name)
+        
+        # Create pointToLayer function that uses the _point_color property
         point_to_layer_func = f"""
             function(feature, latlng) {{
+                var pointColor = feature.properties._point_color || '{style.point_color}';
                 return L.circleMarker(latlng, {{
                     radius: {style.point_size},
-                    color: '{style.point_color}',
+                    color: pointColor,
                     weight: 1,
                     opacity: {style.point_opacity},
-                    fillColor: '{style.point_color}',
+                    fillColor: pointColor,
                     fillOpacity: {style.point_opacity}
                 }});
             }}
         """
+        
+        # Enhanced popup function that shows color field info if available
+        if use_graduated_colors and color_field:
+            popup_extra = f"""
+                    if (feature.properties['{color_field}'] !== undefined && feature.properties['{color_field}'] !== null) {{
+                        popupContent += '<tr><td style="padding-right: 10px;"><strong>Color Value ({color_field})</strong></td><td>' + feature.properties['{color_field}'] + '</td></tr>';
+                        popupContent += '<tr><td style="padding-right: 10px;"><strong>Value Range</strong></td><td>{vmin:.2f} - {vmax:.2f}</td></tr>';
+                    }}
+            """
+        else:
+            popup_extra = ""
+            
         on_each_feature_func = f"""
             function(feature, layer) {{
                 if (feature.properties) {{
                     var popupContent = '<div style="max-height: 200px; overflow-y: auto;"><table>';
                     for (var p in feature.properties) {{
-                        popupContent += '<tr><td style="padding-right: 10px;"><strong>' + p + '</strong></td><td>' + feature.properties[p] + '</td></tr>';
+                        if (p !== '_point_color') {{  // Skip internal color property
+                            popupContent += '<tr><td style="padding-right: 10px;"><strong>' + p + '</strong></td><td>' + feature.properties[p] + '</td></tr>';
+                        }}
                     }}
+                    {popup_extra}
                     popupContent += '</table></div>';
                     layer.bindPopup(popupContent);
                 }}
@@ -344,7 +427,11 @@ class UXOMapWidget(QWidget):
         """
 
         self.map_widget.page.runJavaScript(js_code)
-        logger.info(f"Created and stored GeoJSON layer for '{layer.name}'")
+        
+        if use_graduated_colors:
+            logger.info(f"Created graduated color layer '{layer.name}' with {len(features)} points colored by '{color_field}'")
+        else:
+            logger.info(f"Created single-color layer '{layer.name}' with {len(features)} points")
         return True
             
     def _create_raster_layer(self, layer: UXOLayer):

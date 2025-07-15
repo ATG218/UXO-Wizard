@@ -832,13 +832,15 @@ class BaseProcessor(ABC):
         
         return LayerStyle(point_color="#0066CC", point_size=4)
     
-    def _create_gamma_style(self, data: Any, layer_type: str) -> LayerStyle:
-        """Create gamma radiation-specific styling"""
+    def _create_gamma_style(self, data: Any, layer_type: str, provided_style: Optional[Dict[str, Any]] = None) -> LayerStyle:
+        """Create gamma radiation-specific styling, respecting custom ramps"""
+        default_ramp = ["#004400", "#008800", "#00CC00", "#CCCC00", "#CC8800", "#CC0000"]
+        color_ramp = provided_style.get('color_ramp', default_ramp) if provided_style else default_ramp
         return LayerStyle(
             point_color="#00CC66",
             point_size=5,
             use_graduated_colors=True,
-            color_ramp=["#004400", "#008800", "#00CC00", "#CCCC00", "#CC8800", "#CC0000"]
+            color_ramp=color_ramp
         )
     
     def _create_gpr_style(self, data: Any, layer_type: str) -> LayerStyle:
