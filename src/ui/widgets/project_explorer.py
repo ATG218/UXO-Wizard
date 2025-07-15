@@ -5,11 +5,16 @@ Project Explorer Widget for UXO Wizard
 from PySide6.QtWidgets import (
     QTreeView, QVBoxLayout, QWidget, QToolButton, 
     QHBoxLayout, QMenu, QFileSystemModel, QHeaderView,
-    QStackedWidget, QLabel, QPushButton
+    QStackedWidget, QLabel, QPushButton,
+    QInputDialog, QMessageBox, QFormLayout, QDialog, QDialogButtonBox
 )
-from PySide6.QtCore import Qt, Signal, QDir, QModelIndex, QSettings
+from PySide6.QtCore import Qt, Signal, QDir, QModelIndex, QSettings, QFileInfo, QItemSelectionModel
 from PySide6.QtGui import QIcon, QAction, QFont
 from loguru import logger
+import os
+import shutil
+import pandas as pd
+from .processing.processing_dialog import ProcessingDialog
 
 
 class ProjectWelcomeWidget(QWidget):
@@ -98,6 +103,9 @@ class ProjectExplorer(QWidget):
     
     def __init__(self):
         super().__init__()
+        self.clipboard_paths = []
+        self.is_cut = False
+        self.clicked_path = None
         self.current_project_path = None
         self.settings = QSettings("UXO-Wizard", "Desktop-Suite")
         self.setup_ui()
@@ -161,6 +169,10 @@ class ProjectExplorer(QWidget):
         
         # Tree view
         self.tree_view = QTreeView()
+        self.tree_view.setSelectionMode(QTreeView.ExtendedSelection)
+        self.tree_view.setDragEnabled(True)
+        self.tree_view.setAcceptDrops(True)
+        self.tree_view.setDropIndicatorShown(True)
         self.tree_view.setAlternatingRowColors(True)
         self.tree_view.setAnimated(True)
         self.tree_view.setSortingEnabled(True)
@@ -263,50 +275,88 @@ class ProjectExplorer(QWidget):
         
     def show_context_menu(self, position):
         """Show context menu for selected item"""
+        clicked_index = self.tree_view.indexAt(position)
+        if not clicked_index.isValid():
+            self.clicked_path = self.current_project_path
+        else:
+            self.clicked_path = self.model.filePath(clicked_index)
+        
         indexes = self.tree_view.selectedIndexes()
+        if not indexes and clicked_index.isValid():
+            self.tree_view.selectionModel().select(clicked_index, QItemSelectionModel.Select)
+            indexes = self.tree_view.selectedIndexes()
+        
         if not indexes:
             return
-            
-        index = indexes[0]
-        file_path = self.model.filePath(index)
-        is_dir = self.model.isDir(index)
+        
+        selected_indexes = [idx for idx in indexes if idx.column() == 0]
+        if not selected_indexes:
+            return
+        
+        selected_paths = [self.model.filePath(idx) for idx in selected_indexes]
+        is_dirs = [self.model.isDir(idx) for idx in selected_indexes]
+        all_dirs = all(is_dirs)
         
         menu = QMenu()
         
-        if not is_dir:
+        if not all_dirs:
             open_action = QAction("Open", self)
-            open_action.triggered.connect(lambda: self.file_selected.emit(file_path))
+            open_action.triggered.connect(lambda: [self.file_selected.emit(p) for p in selected_paths if not os.path.isdir(p)])
             menu.addAction(open_action)
             
-            menu.addSeparator()
-            
             process_action = QAction("Process...", self)
+            process_action.triggered.connect(self.process_selected)
+            if len(selected_paths) != 1 or os.path.isdir(selected_paths[0]):
+                process_action.setEnabled(False)
             menu.addAction(process_action)
             
-        else:
-            set_root_action = QAction("Set as Root", self)
-            set_root_action.triggered.connect(lambda: self.set_root_path(file_path))
-            menu.addAction(set_root_action)
-            
             menu.addSeparator()
-            
-            new_folder_action = QAction("New Folder", self)
-            menu.addAction(new_folder_action)
-            
+        
+        if all_dirs and len(selected_paths) == 1:
+            set_root_action = QAction("Set as Root", self)
+            set_root_action.triggered.connect(lambda: self.set_root_path(selected_paths[0]))
+            menu.addAction(set_root_action)
+        
+        new_folder_action = QAction("New Folder", self)
+        new_folder_action.triggered.connect(self.create_new_folder)
+        menu.addAction(new_folder_action)
+        
+        menu.addSeparator()
+        
+        copy_action = QAction("Copy", self)
+        copy_action.triggered.connect(self.copy_items)
+        menu.addAction(copy_action)
+        
+        cut_action = QAction("Cut", self)
+        cut_action.triggered.connect(self.cut_items)
+        menu.addAction(cut_action)
+        
+        if self.clipboard_paths:
+            paste_action = QAction("Paste", self)
+            paste_action.triggered.connect(self.paste_items)
+            menu.addAction(paste_action)
+        
         menu.addSeparator()
         
         rename_action = QAction("Rename", self)
+        rename_action.triggered.connect(self.rename_item)
+        if len(selected_paths) != 1:
+            rename_action.setEnabled(False)
         menu.addAction(rename_action)
         
         delete_action = QAction("Delete", self)
+        delete_action.triggered.connect(self.delete_item)
         menu.addAction(delete_action)
         
         menu.addSeparator()
         
         properties_action = QAction("Properties", self)
+        properties_action.triggered.connect(self.show_properties)
+        if len(selected_paths) != 1:
+            properties_action.setEnabled(False)
         menu.addAction(properties_action)
         
-        menu.exec_(self.tree_view.mapToGlobal(position))
+        menu.exec_(self.tree_view.viewport().mapToGlobal(position))
         
     def refresh_view(self):
         """Refresh the file view"""
@@ -352,4 +402,244 @@ class ProjectExplorer(QWidget):
                 logger.warning(f"Last project path no longer exists: {last_project_path}")
                 # Clean up invalid path from settings
                 self.settings.remove("last_project_path")
-            self.show_welcome() 
+            self.show_welcome()
+
+    def get_selected_paths(self):
+        """Get list of unique selected paths"""
+        indexes = self.tree_view.selectedIndexes()
+        paths = set()
+        for index in indexes:
+            if index.column() == 0:
+                paths.add(self.model.filePath(index))
+        return list(paths)
+    
+    def create_new_folder(self):
+        """Create a new folder in the clicked or root directory"""
+        parent_dir = self.current_project_path
+        if self.clicked_path and os.path.isdir(self.clicked_path):
+            parent_dir = self.clicked_path
+        name, ok = QInputDialog.getText(self, "New Folder", "Folder name:")
+        if ok and name:
+            new_path = os.path.join(parent_dir, name)
+            try:
+                os.mkdir(new_path)
+                logger.info(f"Created folder: {new_path}")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to create folder: {str(e)}")
+    
+    def rename_item(self):
+        """Rename the selected item (single selection only)"""
+        selected = self.get_selected_paths()
+        if len(selected) != 1:
+            return
+        path = selected[0]
+        base = os.path.basename(path)
+        name, ok = QInputDialog.getText(self, "Rename", "New name:", text=base)
+        if ok and name:
+            new_path = os.path.join(os.path.dirname(path), name)
+            try:
+                os.rename(path, new_path)
+                logger.info(f"Renamed {path} to {new_path}")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to rename: {str(e)}")
+    
+    def delete_item(self):
+        """Delete selected items"""
+        selected = self.get_selected_paths()
+        if not selected:
+            return
+        msg = f"Are you sure you want to delete {len(selected)} item(s)?"
+        if QMessageBox.question(self, "Confirm Delete", msg) != QMessageBox.Yes:
+            return
+        for path in selected:
+            try:
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+                logger.info(f"Deleted: {path}")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to delete {path}: {str(e)}")
+    
+    def show_properties(self):
+        """Show properties for single selected item"""
+        selected = self.get_selected_paths()
+        if len(selected) != 1:
+            return
+        path = selected[0]
+        info = QFileInfo(path)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Properties")
+        layout = QFormLayout()
+        layout.addRow("Name:", QLabel(info.fileName()))
+        layout.addRow("Path:", QLabel(info.absoluteFilePath()))
+        layout.addRow("Type:", QLabel("Folder" if info.isDir() else "File"))
+        layout.addRow("Size:", QLabel(f"{info.size()} bytes"))
+        layout.addRow("Modified:", QLabel(info.lastModified().toString()))
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons.accepted.connect(dialog.accept)
+        layout.addRow(buttons)
+        dialog.setLayout(layout)
+        dialog.exec_()
+    
+    def copy_items(self):
+        """Copy selected paths to clipboard"""
+        self.clipboard_paths = self.get_selected_paths()
+        self.is_cut = False
+        logger.info(f"Copied {len(self.clipboard_paths)} items")
+    
+    def cut_items(self):
+        """Cut selected paths to clipboard"""
+        self.clipboard_paths = self.get_selected_paths()
+        self.is_cut = True
+        logger.info(f"Cut {len(self.clipboard_paths)} items")
+    
+    def paste_items(self):
+        """Paste clipboard items to clicked or root directory"""
+        if not self.clipboard_paths:
+            return
+        target_dir = self.current_project_path
+        if self.clicked_path:
+            if os.path.isdir(self.clicked_path):
+                target_dir = self.clicked_path
+            else:
+                target_dir = os.path.dirname(self.clicked_path)
+        for src in self.clipboard_paths:
+            dest = os.path.join(target_dir, os.path.basename(src))
+            try:
+                if self.is_cut:
+                    shutil.move(src, dest)
+                else:
+                    if os.path.isdir(src):
+                        shutil.copytree(src, dest)
+                    else:
+                        shutil.copy(src, dest)
+                logger.info(f"Pasted {src} to {dest}")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to paste {src}: {str(e)}")
+        if self.is_cut:
+            self.clipboard_paths = []
+
+    def _detect_csv_delimiter(self, filepath, encoding='utf-8', data_start_line=0):
+        """Simple delimiter detection by counting occurrences"""
+        try:
+            with open(filepath, 'r', encoding=encoding) as f:
+                lines = f.readlines()
+            
+            if data_start_line > 0 and data_start_line < len(lines):
+                sample_lines = lines[data_start_line:data_start_line + 5]
+            else:
+                sample_lines = lines[:10]
+            
+            delimiter_counts = {';': 0, ',': 0, '\t': 0, '|': 0}
+            
+            for line in sample_lines:
+                for delimiter in delimiter_counts:
+                    delimiter_counts[delimiter] += line.count(delimiter)
+            
+            best_delimiter = max(delimiter_counts, key=delimiter_counts.get)
+            if delimiter_counts[best_delimiter] > 0:
+                logger.debug(f"Detected delimiter '{best_delimiter}'")
+                return best_delimiter
+            
+            return ';'
+        except Exception as e:
+            logger.warning(f"Error detecting delimiter: {e}")
+            return ';'
+
+    def _parse_file_header(self, filepath, encoding='utf-8'):
+        """Parse multi-line header and find where tabular data starts"""
+        metadata = {}
+        data_start_line = 0
+        header_line = None
+        try:
+            with open(filepath, 'r', encoding=encoding) as f:
+                lines = f.readlines()
+            
+            for i, line in enumerate(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                delimiter_count = max(line.count(';'), line.count(','), line.count('\t'), line.count('|'))
+                if delimiter_count >= 3:
+                    delim = max([';', ',', '\t', '|'], key=line.count)
+                    tokens = [t.strip().lower() for t in line.split(delim)]
+                    if tokens and 'timestamp' in tokens[0]:
+                        header_line = i
+                        data_start_line = i + 1
+                        break
+            return metadata, data_start_line, header_line
+        except Exception as e:
+            logger.warning(f"Error parsing header: {e}")
+            return {}, 0, None
+
+    def _load_csv_enhanced(self, filepath):
+        """Load CSV with smart parsing"""
+        encoding = 'utf-8'
+        metadata, data_start_line, header_line = self._parse_file_header(filepath, encoding)
+        delimiter = self._detect_csv_delimiter(filepath, encoding, data_start_line)
+        if header_line is not None and header_line >= 0:
+            skip_rows = header_line
+        else:
+            skip_rows = data_start_line if data_start_line > 0 else None
+        if skip_rows == 0:
+            skip_rows = None
+        try:
+            df = pd.read_csv(filepath, delimiter=delimiter, encoding=encoding, skiprows=skip_rows, header=0)
+            df.columns = df.columns.str.strip()
+            if hasattr(df, 'attrs'):
+                df.attrs['file_metadata'] = metadata
+                df.attrs['source_file'] = filepath
+            return df
+        except Exception as e:
+            logger.warning(f"Primary load failed: {e}")
+            fallback_options = [(';','latin-1'), (',','utf-8'), (',','latin-1')]
+            for delim, enc in fallback_options:
+                try:
+                    df = pd.read_csv(filepath, delimiter=delim, encoding=enc, skiprows=skip_rows, header=0)
+                    df.columns = df.columns.str.strip()
+                    if hasattr(df, 'attrs'):
+                        df.attrs['file_metadata'] = metadata
+                        df.attrs['source_file'] = filepath
+                    return df
+                except:
+                    continue
+            raise Exception("Failed to load CSV")
+
+    def load_dataframe(self, filepath):
+        """Load dataframe from file"""
+        file_lower = filepath.lower()
+        if file_lower.endswith('.csv'):
+            return self._load_csv_enhanced(filepath)
+        elif file_lower.endswith(('.xlsx', '.xls')):
+            return pd.read_excel(filepath)
+        elif file_lower.endswith('.json'):
+            return pd.read_json(filepath)
+        else:
+            return None
+
+    def process_selected(self):
+        """Process the selected file"""
+        selected = self.get_selected_paths()
+        if len(selected) != 1:
+            QMessageBox.warning(self, "Selection Error", "Please select exactly one file to process.")
+            return
+        path = selected[0]
+        if os.path.isdir(path):
+            QMessageBox.warning(self, "Selection Error", "Cannot process directories.")
+            return
+        try:
+            df = self.load_dataframe(path)
+            if df is None:
+                raise ValueError("Unsupported file type for processing")
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Failed to load file for processing: {str(e)}")
+            return
+        dialog = ProcessingDialog(df, self, input_file_path=path, project_manager=None)
+        if dialog.exec() == QDialog.Accepted:
+            result = dialog.get_result()
+            if result and result.success:
+                message = "Processing completed successfully!"
+                if result.output_file_path:
+                    message += f"\nOutput saved to: {result.output_file_path}"
+                QMessageBox.information(self, "Success", message)
