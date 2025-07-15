@@ -243,9 +243,21 @@ class ProcessingPipeline(QObject):
             project_dir = self.project_manager.get_current_working_directory()
             base_output_dir = os.path.join(project_dir, "processed")
         elif result.input_file_path:
-            # Fallback: Create processed/ directory next to input file
-            input_dir = os.path.dirname(result.input_file_path)
-            base_output_dir = os.path.join(input_dir, "processed")
+            # Find project root by looking for the first "processed" directory in the path
+            input_path = Path(result.input_file_path)
+            project_dir = None
+            
+            # Walk up the path to find project root (before any "processed" directory)
+            for parent in input_path.parents:
+                if parent.name == "processed" and parent.parent:
+                    project_dir = parent.parent
+                    break
+            
+            # If no processed directory found, use directory containing input file
+            if project_dir is None:
+                project_dir = input_path.parent
+                
+            base_output_dir = os.path.join(project_dir, "processed")
         else:
             # Last resort: current working directory
             base_output_dir = os.path.join(os.getcwd(), "processed")
@@ -347,7 +359,7 @@ class ProcessingPipeline(QObject):
             # Create output directory structure (same as data files)
             output_dir = self._create_output_directory(result)
             
-            # Generate plot filename based on processing info
+            # Generate unique plot filename based on processing info
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             script_name = result.processing_script or "plot"
             processor_type = result.metadata.get('processor', 'unknown')
@@ -359,28 +371,30 @@ class ProcessingPipeline(QObject):
             else:
                 base_name = f"{processor_type}_{script_name}_{timestamp}"
             
-            # Save as both interactive .mplplot and static .png
+            logger.info(f"Auto-saving plot to directory: {output_dir}")
+            
+            # Priority: Save interactive .mplplot file with unique naming
             plot_files = []
             
-            # Save interactive plot file (.mplplot)
+            # Save interactive plot file (.mplplot) - primary format
             mplplot_path = Path(output_dir) / f"{base_name}.mplplot"
             try:
                 import pickle
                 with open(mplplot_path, 'wb') as f:
                     pickle.dump(result.figure, f)
                 plot_files.append(('mplplot', str(mplplot_path), 'Interactive matplotlib plot'))
-                logger.info(f"Saved interactive plot: {mplplot_path}")
+                logger.info(f"✓ Auto-saved interactive plot: {mplplot_path}")
             except Exception as e:
-                logger.warning(f"Failed to save interactive plot: {e}")
+                logger.error(f"✗ Failed to save interactive plot: {e}")
             
-            # Save static PNG file
+            # Optionally save static PNG file (secondary format)
             png_path = Path(output_dir) / f"{base_name}.png"
             try:
                 result.figure.savefig(png_path, dpi=300, bbox_inches='tight')
                 plot_files.append(('png', str(png_path), 'Static plot image'))
-                logger.info(f"Saved static plot: {png_path}")
+                logger.info(f"✓ Auto-saved static plot: {png_path}")
             except Exception as e:
-                logger.warning(f"Failed to save static plot: {e}")
+                logger.warning(f"✗ Failed to save static plot: {e}")
             
             # Add plot files to result outputs
             for file_type, file_path, description in plot_files:

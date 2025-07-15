@@ -296,7 +296,7 @@ class LabWidget(QWidget):
         # Set up filters to show relevant files
         self.file_model.setNameFilters([
             "*.py", "*.csv", "*.txt", "*.json", "*.png", "*.jpg", "*.tiff", 
-            "*.dat", "*.xyz", "*.las", "*.laz", "*.shp", "*.geojson"
+            "*.dat", "*.xyz", "*.las", "*.laz", "*.shp", "*.geojson", "*.mplplot"
         ])
         self.file_model.setNameFilterDisables(False)
         
@@ -338,7 +338,7 @@ class LabWidget(QWidget):
             filename = os.path.basename(file_path)
             if file_path.lower().endswith('.py'):
                 self.log_activity(f"Opened script '{filename}' for viewing")
-            elif file_path.lower().endswith(('.csv', '.txt', '.dat', '.json', '.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.tif')):
+            elif file_path.lower().endswith(('.csv', '.txt', '.dat', '.json', '.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.tif', '.mplplot')):
                 self.log_activity(f"Opened '{filename}' in data viewer")
             else:
                 self.log_activity(f"Opened '{filename}' with system default")
@@ -591,7 +591,7 @@ class LabWidget(QWidget):
                 self.script_executed.emit(file_path)
                 self.log_activity(f"Opened script: {os.path.basename(file_path)}")
                 
-            elif file_path.lower().endswith(('.csv', '.txt', '.dat', '.json', '.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.tif')):
+            elif file_path.lower().endswith(('.csv', '.txt', '.dat', '.json', '.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.tif', '.mplplot')):
                 # For data and image files, emit signal to open in data viewer
                 self.file_selected.emit(file_path)
                 self.log_activity(f"Opened file in data viewer: {os.path.basename(file_path)}")

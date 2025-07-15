@@ -12,20 +12,86 @@ This document will walk you through the architecture, the essential components y
 
 The data processing workflow in UXO Wizard is managed by a few key components defined in the provided source files:
 
+### 2.1 Core Components
+
+The framework consists of several interconnected components:
+
 * **`ProcessingPipeline` (`pipeline.py`):** The central coordinator. It discovers and manages the different `Processors`, handles running them in background threads, and manages the flow of data from input to output, including file generation.
 * **`BaseProcessor` (`base.py`):** An abstract base class for data-type-specific processors (e.g., `MagneticProcessor`, `GPRProcessor`). Its primary role is to discover and manage the processing scripts associated with its data type (e.g., the `MagneticProcessor` finds all scripts in the `src/processing/scripts/magnetic/` directory).
 * **`ScriptInterface` (`base.py`):** The most important component for a script developer. This is an abstract base class that defines the contract all processing scripts must follow. Your custom script class will inherit from `ScriptInterface` and implement its abstract methods.
-* **`ProcessingResult` (`base.py`):** A data class used to standardize the output of all processing scripts. It contains the processed data, success status, metadata, and any generated output files or visualization layers.
-* **`magbase_processing.py`:** A concrete implementation of a `ScriptInterface` for magnetic data. It serves as an excellent, comprehensive example of how to build a script that includes file inputs, complex parameters, data validation, and advanced processing.
+* **`ProcessingResult` (`base.py`):** A data class used to standardize the output of all processing scripts. It contains the processed data, success status, metadata, matplotlib figures, and any generated output files or visualization layers.
+* **Processing Scripts:** Concrete implementations of `ScriptInterface` for specific processing tasks:
+  - `basic_processing.py` - Simple magnetic data processing with 2D/3D plotting
+  - `grid_interpolator.py` - Advanced grid interpolation with minimum curvature
+  - `magbase_processing.py` - Comprehensive magnetic base station processing
+
+### 2.2 Current Working Framework (2025)
+
+The current framework has been enhanced with several key features:
+
+#### **Automatic File Management**
+- **Plot Auto-saving**: All matplotlib figures are automatically saved as `.mplplot` (interactive) and `.png` (static) files
+- **Directory Structure**: Files are organized as `{project_root}/processed/{processor_type}/filename_script_timestamp.ext`
+- **Unique Naming**: Timestamp-based filenames prevent overwrites
+- **No User Prompts**: All file operations happen automatically
+
+#### **Enhanced UI Integration**
+- **Data Viewer**: Plots automatically open in new tabs when generated
+- **Lab Widget**: Browse and double-click `.mplplot` files to reopen them
+- **Project Explorer**: Navigate saved plots in the file tree
+- **Interactive Plots**: Full matplotlib interactivity preserved in saved plots
+
+#### **Processing Pipeline Improvements**
+- **Background Processing**: Scripts run in separate threads to prevent UI freezing
+- **Progress Reporting**: Real-time progress updates during processing
+- **Error Handling**: Comprehensive error reporting and graceful failure handling
+- **Metadata Generation**: Automatic JSON sidecar files with processing information
+
+#### **Layer System Integration**
+- **Automatic Layer Creation**: Processing outputs automatically become map layers
+- **Norwegian UTM Support**: Automatic coordinate system detection (zones 32-35)
+- **Custom Layer Names**: Timestamped unique layer names prevent overwrites
+- **Real-time Visualization**: Layers appear immediately in the map interface
 
 The general workflow is as follows:
 1.  The `ProcessingPipeline` identifies the type of data loaded by the user.
 2.  It selects the appropriate `Processor` (e.g., `MagneticProcessor`).
 3.  The `Processor` discovers all available `ScriptInterface` implementations in its designated script directory.
 4.  The user selects a script and configures its parameters through the UI.
-5.  The `Processor` executes the `execute` method of the selected script.
+5.  The `Processor` executes the `execute` method of the selected script in a background thread.
 6.  The script performs the processing and returns a `ProcessingResult` object.
-7.  The `ProcessingPipeline` receives the result and handles file saving and metadata generation.
+7.  The `ProcessingPipeline` receives the result and handles:
+   - Automatic data file saving to `processed/{processor_type}/`
+   - Metadata generation (JSON sidecar files)
+   - **Automatic plot saving** (.mplplot and .png formats)
+   - Layer creation for map visualization
+   - UI updates with results
+
+### 2.3 Script Development in 2025
+
+When developing scripts for the current framework, you benefit from:
+
+#### **Zero-Configuration Plot Management**
+- Simply return a `matplotlib.figure.Figure` in your `ProcessingResult`
+- No need to handle file saving, user prompts, or file management
+- Automatic integration with the data viewer and lab widget
+
+#### **Robust Error Handling**
+- Scripts run in background threads with comprehensive error handling
+- Progress callbacks provide real-time user feedback
+- Graceful failure handling prevents application crashes
+
+#### **Enhanced Developer Experience**
+- Clear script examples in `basic_processing.py` and `grid_interpolator.py`
+- Comprehensive parameter system with automatic UI generation
+- Detailed logging and debugging support
+- Automatic file organization and metadata generation
+
+#### **Integration with UXO Wizard Ecosystem**
+- Scripts automatically integrate with the map system
+- Layer outputs appear in real-time on the map
+- File outputs are organized in the project's processed directory
+- Full integration with the lab widget for result browsing
 
 ## 3. Creating a New Processing Script
 
@@ -268,39 +334,189 @@ The `ProcessingResult` object is crucial for communicating the outcome of your s
 
 ### Returning Plots
 
-Your script can generate and return Matplotlib plots for visualization in the UXO Wizard interface.
+Your script can generate and return Matplotlib plots for visualization in the UXO Wizard interface. The framework provides automatic plot handling with seamless integration.
 
-1.  **Import `matplotlib`**: Make sure `matplotlib.pyplot` is imported.
-2.  **Create a Plot**: Generate your plot as you normally would, which creates a `Figure` object.
-3.  **Return the Figure**: Assign the `Figure` object to the `figure` attribute of your `ProcessingResult`.
+#### **Automatic Plot Management**
 
-The application will automatically handle the returned plot, allowing the user to view it interactively or save it.
+When your script returns a `ProcessingResult` with a `figure`, the framework automatically:
 
-**Example:**
+1. **Displays the plot** in a new data viewer tab for immediate interaction
+2. **Saves the plot** to the `processed/{processor_type}/` directory in two formats:
+   - `.mplplot` - Interactive matplotlib plot (pickle format) for reopening in the data viewer
+   - `.png` - Static high-resolution image (300 DPI) for reports and documentation
+3. **Generates unique filenames** using the pattern: `{input_filename}_{script_name}_{timestamp}.{extension}`
+4. **No user prompts** - saving happens automatically in the background
 
+#### **Creating Plots in Your Script**
+
+**Basic Plot Example:**
 ```python
 import matplotlib.pyplot as plt
-from ...base import ProcessingResult
+from src.processing.base import ProcessingResult
 
-def run(data, parameters):
+def execute(self, data: pd.DataFrame, params: Dict[str, Any], 
+            progress_callback: Optional[Callable] = None, input_file_path: Optional[str] = None) -> ProcessingResult:
+    
     # Your data processing logic...
     processed_df = data.copy()
-    processed_df['new_col'] = processed_df['some_col'] * 2
-
-    # 1. & 2. Create a plot
-    fig, ax = plt.subplots()
-    ax.plot(processed_df['timestamp'], processed_df['new_col'])
-    ax.set_title("My Processing Result")
+    processed_df['anomaly_field'] = processed_df['magnetic_field'] - processed_df['magnetic_field'].mean()
+    
+    # Create a plot
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(processed_df['timestamp'], processed_df['anomaly_field'])
+    ax.set_title("Magnetic Anomaly Analysis")
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Magnetic Field Anomaly [nT]")
+    ax.grid(True)
     fig.tight_layout()
-
-    # 3. Return the figure in the result
-    return ProcessingResult(
+    
+    # Return the figure in the result
+    result = ProcessingResult(
         success=True,
         data=processed_df,
-        figure=fig, # <-- Here is the plot
-        message="Processing complete with a plot."
+        figure=fig,  # <-- Framework handles everything from here
+        processing_script=self.name
     )
+    
+    # Essential: Include processor metadata for correct file organization
+    result.metadata.update({
+        'processor': 'magnetic',  # Files saved to processed/magnetic/
+        'processing_method': 'anomaly_detection',
+        'data_points': len(processed_df)
+    })
+    
+    return result
 ```
+
+#### **Advanced Plot Examples**
+
+**2D and 3D Plot Generation:**
+```python
+def execute(self, data, params, progress_callback=None, input_file_path=None):
+    # ... data processing ...
+    
+    # Check if 3D plot is requested
+    plot_type = params.get('output_options', {}).get('plot_type', {}).get('value', '2D')
+    
+    if plot_type == '3D':
+        # Create 3D plot
+        fig = plt.figure(figsize=(12, 9))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Use first 3 numeric columns for 3D visualization
+        x_col, y_col, z_col = numeric_columns[:3]
+        scatter = ax.scatter(data[x_col], data[y_col], data[z_col], 
+                           c=data[z_col], cmap='viridis', s=20, alpha=0.6)
+        
+        ax.set_xlabel(x_col)
+        ax.set_ylabel(y_col)
+        ax.set_zlabel(z_col)
+        ax.set_title('3D Data Visualization')
+        fig.colorbar(scatter, ax=ax, shrink=0.5, aspect=5)
+        
+    else:
+        # Create 2D plot
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(data[x_col], data[y_col])
+        ax.set_xlabel(x_col)
+        ax.set_ylabel(y_col)
+        ax.set_title('2D Data Visualization')
+        ax.grid(True)
+    
+    fig.tight_layout()
+    
+    result = ProcessingResult(
+        success=True,
+        data=processed_data,
+        figure=fig,
+        processing_script=self.name
+    )
+    
+    result.metadata.update({
+        'processor': 'magnetic',
+        'plot_type': plot_type,
+        'visualization_columns': [x_col, y_col] + ([z_col] if plot_type == '3D' else [])
+    })
+    
+    return result
+```
+
+#### **Making Plots Optional**
+
+For performance or user preference, make plot generation optional:
+
+```python
+def get_parameters(self):
+    return {
+        'output_options': {
+            'generate_plot': {
+                'value': True,
+                'type': 'bool',
+                'description': 'Generate an interactive plot for the data viewer'
+            },
+            'plot_type': {
+                'value': '2D',
+                'type': 'choice',
+                'choices': ['2D', '3D'],
+                'description': 'Type of plot to generate'
+            }
+        }
+    }
+
+def execute(self, data, params, progress_callback=None, input_file_path=None):
+    # ... data processing ...
+    
+    result = ProcessingResult(
+        success=True,
+        data=processed_data,
+        processing_script=self.name
+    )
+    
+    # Only generate plot if requested
+    generate_plot = params.get('output_options', {}).get('generate_plot', {}).get('value', True)
+    
+    if generate_plot:
+        if progress_callback:
+            progress_callback(0.9, "Generating visualization...")
+        
+        fig, ax = plt.subplots()
+        # ... create your plot ...
+        
+        result.figure = fig
+    
+    return result
+```
+
+#### **Plot File Organization**
+
+Generated plot files are automatically saved to:
+```
+project_directory/
+├── processed/
+│   ├── magnetic/
+│   │   ├── survey_data_basic_processing_20250714_125841.mplplot
+│   │   ├── survey_data_basic_processing_20250714_125841.png
+│   │   └── survey_data_grid_interpolator_20250714_130215.mplplot
+│   ├── gpr/
+│   └── gamma/
+```
+
+#### **Accessing Saved Plots**
+
+Users can access saved plots in multiple ways:
+
+1. **Lab Widget**: Browse and double-click `.mplplot` files in the processed directory
+2. **Project Explorer**: Navigate to saved plots in the file tree
+3. **Data Viewer**: Plots automatically open in new tabs when generated
+4. **File System**: Access static `.png` files for reports and documentation
+
+#### **Important Notes**
+
+- **No user interaction required**: Plots are saved automatically without prompts
+- **Unique filenames**: Timestamps prevent overwrites when running scripts multiple times
+- **Interactive preservation**: `.mplplot` files maintain full matplotlib interactivity
+- **Performance**: Plot generation is optional and can be toggled off for large datasets
+- **Memory management**: Plots are saved immediately and don't consume memory long-term
 
 ## 4. Enhanced Layer Generation System
 

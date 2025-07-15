@@ -29,7 +29,7 @@ class PlotWidget(QWidget):
         
         # Add a toolbar for navigation with smaller icons
         self.toolbar = NavigationToolbar(self.canvas, self)
-        self.toolbar.setIconSize(self.toolbar.iconSize() * 0.7)  # Reduce icon size by 30%
+        self.toolbar.setIconSize(self.toolbar.iconSize() * 0.2)  # Reduce icon size by 30%
         
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
