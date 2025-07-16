@@ -33,6 +33,143 @@ except ImportError:
     SCIPY_AVAILABLE = False
 
 
+@jit(nopython=True, cache=True)
+def _create_influence_weights_numba(x, y, z, grid_x_coords, grid_y_coords, influence_radius):
+    """
+    JIT-compiled function to create influence weights and target values for soft constraints.
+    
+    Args:
+        x, y, z: Data point coordinates and values (1D arrays)
+        grid_x_coords, grid_y_coords: Grid coordinate arrays (1D arrays)
+        influence_radius: Influence radius for soft constraints
+    
+    Returns:
+        influence_weights: 2D array of influence weights
+        target_values: 2D array of target values
+    """
+    ny = len(grid_y_coords)
+    nx = len(grid_x_coords)
+    
+    influence_weights = np.zeros((ny, nx))
+    target_values = np.zeros((ny, nx))
+    
+    # Grid spacing
+    dx = grid_x_coords[1] - grid_x_coords[0] if nx > 1 else 1.0
+    dy = grid_y_coords[1] - grid_y_coords[0] if ny > 1 else 1.0
+    
+    # For each data point, create influence zone
+    for data_idx in range(len(x)):
+        xi, yi, zi = x[data_idx], y[data_idx], z[data_idx]
+        
+        # Convert to grid coordinates
+        gi = (yi - grid_y_coords[0]) / dy
+        gj = (xi - grid_x_coords[0]) / dx
+        
+        # Calculate grid range that could be influenced
+        i_min = max(0, int(gi - influence_radius/dy))
+        i_max = min(ny, int(gi + influence_radius/dy) + 1)
+        j_min = max(0, int(gj - influence_radius/dx))
+        j_max = min(nx, int(gj + influence_radius/dx) + 1)
+        
+        # Create influence zone around this data point
+        for i in range(i_min, i_max):
+            for j in range(j_min, j_max):
+                # Calculate distance from grid point to data point
+                grid_y_coord = grid_y_coords[i]
+                grid_x_coord = grid_x_coords[j]
+                distance = np.sqrt((grid_x_coord - xi)**2 + (grid_y_coord - yi)**2)
+                
+                if distance <= influence_radius:
+                    # Gaussian-like weight function
+                    weight = np.exp(-(distance / (influence_radius * 0.3))**2)
+                    
+                    # Accumulate weighted influence
+                    old_weight = influence_weights[i, j]
+                    new_weight = old_weight + weight
+                    
+                    if new_weight > 0:
+                        # Weighted average of target values
+                        target_values[i, j] = (target_values[i, j] * old_weight + zi * weight) / new_weight
+                        influence_weights[i, j] = new_weight
+    
+    return influence_weights, target_values
+
+
+@jit(nopython=True, cache=True)
+def _minimum_curvature_iteration_numba(grid_z, influence_weights, target_values, 
+                                       omega, min_allowed, max_allowed):
+    """
+    JIT-compiled function for a single minimum curvature iteration with soft constraints.
+    
+    Args:
+        grid_z: Current grid values (modified in-place)
+        influence_weights: Influence weights for soft constraints
+        target_values: Target values for soft constraints
+        omega: Relaxation factor
+        min_allowed, max_allowed: Value bounds for stability
+    
+    Returns:
+        max_change: Maximum change in this iteration
+    """
+    ny, nx = grid_z.shape
+    max_change = 0.0
+    
+    # Update interior points using 5-point stencil with soft constraints
+    for i in range(1, ny-1):
+        for j in range(1, nx-1):
+            old_value = grid_z[i, j]
+            
+            # 5-point stencil for Laplacian
+            neighbors = (grid_z[i+1, j] + grid_z[i-1, j] + 
+                        grid_z[i, j+1] + grid_z[i, j-1]) / 4.0
+            
+            # Successive over-relaxation
+            new_value = old_value + omega * (neighbors - old_value)
+            
+            # Apply soft data constraint if there's influence at this point
+            if influence_weights[i, j] > 0.01:  # Only apply if significant influence
+                constraint_strength = influence_weights[i, j] * 0.1  # Reduce constraint strength
+                target = target_values[i, j]
+                # Blend the relaxed value with the target value
+                new_value = new_value * (1 - constraint_strength) + target * constraint_strength
+            
+            # Clamp values for stability
+            new_value = max(min_allowed, min(max_allowed, new_value))
+            
+            grid_z[i, j] = new_value
+            
+            # Track maximum change
+            change = abs(new_value - old_value)
+            if change > max_change:
+                max_change = change
+    
+    return max_change
+
+
+@jit(nopython=True, cache=True)
+def _apply_boundary_conditions_numba(grid_z):
+    """
+    JIT-compiled function to apply boundary conditions (zero second derivative).
+    
+    Args:
+        grid_z: Grid values (modified in-place)
+    """
+    ny, nx = grid_z.shape
+    
+    # Apply boundary conditions
+    if ny >= 3:
+        # Top and bottom boundaries (zero second derivative)
+        for j in range(nx):
+            grid_z[0, j] = 2*grid_z[1, j] - grid_z[2, j]
+            grid_z[ny-1, j] = 2*grid_z[ny-2, j] - grid_z[ny-3, j]
+    
+    if nx >= 3:
+        # Left and right boundaries (zero second derivative)
+        for i in range(ny):
+            grid_z[i, 0] = 2*grid_z[i, 1] - grid_z[i, 2]
+            grid_z[i, nx-1] = 2*grid_z[i, nx-2] - grid_z[i, nx-3]
+
+
 class GammaInterpolator(ScriptInterface):
     @property
     def name(self) -> str:
@@ -40,7 +177,7 @@ class GammaInterpolator(ScriptInterface):
 
     @property
     def description(self) -> str:
-        return f"Interpolates gamma measurements to smooth grid visualizations using soft-constraint minimum curvature (eliminates flight point artifacts)"
+        return "Interpolates gamma measurements to smooth grid visualizations using soft-constraint minimum curvature (eliminates flight point artifacts)"
 
     def get_parameters(self) -> Dict[str, Any]:
         return {
@@ -182,7 +319,7 @@ class GammaInterpolator(ScriptInterface):
                                         max_iterations=1000, tolerance=1e-6, 
                                         omega=1.8, progress_callback=None):
         """
-        Perform minimum curvature interpolation on irregular data points.
+        Perform minimum curvature interpolation on irregular data points using JIT-compiled functions.
         
         Args:
             x, y, z: Data coordinates and values
@@ -242,10 +379,6 @@ class GammaInterpolator(ScriptInterface):
         dx = (x_max - x_min) / (nx - 1)
         dy = (y_max - y_min) / (ny - 1)
         
-        # Create influence weights for data points instead of hard constraints
-        influence_weights = np.zeros((ny, nx))
-        target_values = np.zeros((ny, nx))
-        
         # Calculate influence radius (adaptive based on data density)
         data_density = len(x) / (x_range * y_range)
         influence_radius = max(2 * dx, 2 * dy, 1.0 / np.sqrt(data_density))
@@ -257,89 +390,22 @@ class GammaInterpolator(ScriptInterface):
         if progress_callback:
             progress_callback(22, f"Influence radius: {influence_radius:.4f} for {len(x)} data points on {ny}x{nx} grid")
         
-        # For each data point, create a soft influence zone
-        total_data_points = len(x)
+        # Create influence weights and target values using JIT-compiled function
+        if progress_callback:
+            if NUMBA_AVAILABLE:
+                progress_callback(25, f"🚀 Using JIT-compiled influence zones for {len(x)} data points...")
+            else:
+                progress_callback(25, f"Creating influence zones for {len(x)} data points...")
         
-        # Estimate computational complexity and use simplified approach if needed
-        estimated_operations = total_data_points * (influence_radius / min(dx, dy))**2
-        use_simplified_approach = estimated_operations > 1e6  # 1 million operations threshold
+        # Convert to numpy arrays for JIT compilation
+        x_array = np.asarray(x, dtype=np.float64)
+        y_array = np.asarray(y, dtype=np.float64)
+        z_array = np.asarray(z, dtype=np.float64)
         
-        if use_simplified_approach:
-            if progress_callback:
-                progress_callback(25, f"Using simplified influence zones for large dataset ({total_data_points} points)...")
-            
-            # Simplified approach: only influence nearest grid points
-            for data_idx, (xi, yi, zi) in enumerate(zip(x, y, z)):
-                if progress_callback and (data_idx % max(1, total_data_points // 20) == 0 or data_idx == total_data_points - 1):
-                    influence_progress = 25 + 10 * (data_idx / total_data_points)
-                    progress_callback(int(influence_progress), f"Simplified influence zones... {data_idx+1}/{total_data_points} data points")
-                
-                # Find nearest grid point
-                gi = int(np.clip(round((yi - y_min) / dy), 0, ny-1))
-                gj = int(np.clip(round((xi - x_min) / dx), 0, nx-1))
-                
-                # Apply influence to nearest grid point and immediate neighbors
-                for di in range(-1, 2):
-                    for dj in range(-1, 2):
-                        i = gi + di
-                        j = gj + dj
-                        if 0 <= i < ny and 0 <= j < nx:
-                            # Distance-based weight
-                            distance = np.sqrt(di**2 + dj**2)
-                            weight = np.exp(-distance**2)
-                            
-                            # Accumulate weighted influence
-                            old_weight = influence_weights[i, j]
-                            new_weight = old_weight + weight
-                            
-                            if new_weight > 0:
-                                target_values[i, j] = (target_values[i, j] * old_weight + zi * weight) / new_weight
-                                influence_weights[i, j] = new_weight
-        else:
-            if progress_callback:
-                progress_callback(25, f"Creating detailed influence zones for {total_data_points} data points...")
-            
-            # Full approach: detailed influence zones
-            for data_idx, (xi, yi, zi) in enumerate(zip(x, y, z)):
-                # More frequent progress updates for large datasets
-                if progress_callback and (data_idx % max(1, total_data_points // 50) == 0 or data_idx == total_data_points - 1):
-                    influence_progress = 25 + 10 * (data_idx / total_data_points)
-                    progress_callback(int(influence_progress), f"Creating influence zones... {data_idx+1}/{total_data_points} data points")
-                
-                # Convert to grid coordinates
-                gi = (yi - y_min) / dy
-                gj = (xi - x_min) / dx
-                
-                # Calculate the grid range that could be influenced (with bounds checking)
-                i_min = max(0, int(gi - influence_radius/dy))
-                i_max = min(ny, int(gi + influence_radius/dy) + 1)
-                j_min = max(0, int(gj - influence_radius/dx))
-                j_max = min(nx, int(gj + influence_radius/dx) + 1)
-                
-                # Skip if influence zone is empty
-                if i_min >= i_max or j_min >= j_max:
-                    continue
-                
-                # Create influence zone around this data point
-                for i in range(i_min, i_max):
-                    for j in range(j_min, j_max):
-                        # Calculate distance from grid point to data point
-                        grid_y_coord = y_min + i * dy
-                        grid_x_coord = x_min + j * dx
-                        distance = np.sqrt((grid_x_coord - xi)**2 + (grid_y_coord - yi)**2)
-                        
-                        if distance <= influence_radius:
-                            # Gaussian-like weight function
-                            weight = np.exp(-(distance / (influence_radius * 0.3))**2)
-                            
-                            # Accumulate weighted influence
-                            old_weight = influence_weights[i, j]
-                            new_weight = old_weight + weight
-                            
-                            if new_weight > 0:
-                                # Weighted average of target values
-                                target_values[i, j] = (target_values[i, j] * old_weight + zi * weight) / new_weight
-                                influence_weights[i, j] = new_weight
+        # Use JIT-compiled function for influence weight calculation
+        influence_weights, target_values = _create_influence_weights_numba(
+            x_array, y_array, z_array, grid_x, grid_y, influence_radius
+        )
         
         # Normalize influence weights to [0, 1] range for stability
         max_weight = np.max(influence_weights)
@@ -362,63 +428,20 @@ class GammaInterpolator(ScriptInterface):
         omega = 0.5  # Lower omega for stability
         
         if progress_callback:
-            progress_callback(45, f"Starting {max_iterations} iterations with soft constraints...")
+            if NUMBA_AVAILABLE:
+                progress_callback(45, f"🚀 Starting {max_iterations} JIT-compiled iterations with soft constraints...")
+            else:
+                progress_callback(45, f"Starting {max_iterations} iterations with soft constraints...")
         
-        # Modified iterative minimum curvature with soft constraints
+        # Modified iterative minimum curvature with soft constraints using JIT
         for iteration in range(max_iterations):
-            grid_z_old = grid_z.copy()
-            max_change = 0.0
+            # Use JIT-compiled function for the iteration
+            max_change = _minimum_curvature_iteration_numba(
+                grid_z, influence_weights, target_values, omega, min_allowed, max_allowed
+            )
             
-            # Calculate progress within this iteration
-            base_progress = 45 + 35 * (iteration / max_iterations)
-            total_points = (ny - 2) * (nx - 2)  # Interior points only
-            points_processed = 0
-            
-            # Update interior points using 5-point stencil with soft constraints
-            for i in range(1, ny-1):
-                for j in range(1, nx-1):
-                    old_value = grid_z[i, j]
-                    
-                    # 5-point stencil for Laplacian
-                    neighbors = (grid_z[i+1, j] + grid_z[i-1, j] + 
-                               grid_z[i, j+1] + grid_z[i, j-1]) / 4.0
-                    
-                    # Successive over-relaxation
-                    new_value = old_value + omega * (neighbors - old_value)
-                    
-                    # Apply soft data constraint if there's influence at this point
-                    if influence_weights[i, j] > 0.01:  # Only apply if significant influence
-                        constraint_strength = influence_weights[i, j] * 0.1  # Reduce constraint strength
-                        target = target_values[i, j]
-                        # Blend the relaxed value with the target value
-                        new_value = new_value * (1 - constraint_strength) + target * constraint_strength
-                    
-                    # Clamp values for stability
-                    new_value = np.clip(new_value, min_allowed, max_allowed)
-                    
-                    grid_z[i, j] = new_value
-                    
-                    # Track maximum change
-                    change = abs(new_value - old_value)
-                    max_change = max(max_change, change)
-                    
-                    # Update progress within iteration for large grids
-                    points_processed += 1
-                    if progress_callback and total_points > 10000 and points_processed % 1000 == 0:
-                        iter_progress = points_processed / total_points
-                        current_progress = base_progress + 35 * iter_progress / max_iterations
-                        progress_callback(int(current_progress), f"Iteration {iteration+1}/{max_iterations} - {points_processed}/{total_points} points")
-            
-            # Apply boundary conditions
-            if ny >= 3:
-                # Top and bottom boundaries (zero second derivative)
-                grid_z[0, :] = 2*grid_z[1, :] - grid_z[2, :]
-                grid_z[-1, :] = 2*grid_z[-2, :] - grid_z[-3, :]
-            
-            if nx >= 3:
-                # Left and right boundaries (zero second derivative)
-                grid_z[:, 0] = 2*grid_z[:, 1] - grid_z[:, 2]
-                grid_z[:, -1] = 2*grid_z[:, -2] - grid_z[:, -3]
+            # Apply boundary conditions using JIT-compiled function
+            _apply_boundary_conditions_numba(grid_z)
             
             # Early detection of instability
             if max_change > data_range:
@@ -441,7 +464,10 @@ class GammaInterpolator(ScriptInterface):
                 break
         
         if progress_callback:
-            progress_callback(85, "Minimum curvature interpolation complete")
+            if NUMBA_AVAILABLE:
+                progress_callback(85, "🚀 JIT-compiled minimum curvature interpolation complete")
+            else:
+                progress_callback(85, "Minimum curvature interpolation complete")
         
         return grid_X, grid_Y, grid_z
 
@@ -456,9 +482,9 @@ class GammaInterpolator(ScriptInterface):
 
         # Log interpolation capabilities
         if NUMBA_AVAILABLE:
-            logger.info("🔬 JIT-accelerated minimum curvature interpolation available")
+            logger.info("🚀 JIT-accelerated minimum curvature interpolation with soft constraints available")
         else:
-            logger.info("📊 Using scipy interpolation (install 'numba' for JIT acceleration)")
+            logger.info("📊 Using minimum curvature interpolation (install 'numba' for JIT acceleration)")
 
         if progress_callback:
             progress_callback(1, "Parsing interpolation parameters...")
@@ -560,7 +586,7 @@ class GammaInterpolator(ScriptInterface):
                 progress_callback(9, f"Global color range: [{global_vmin:.2f}, {global_vmax:.2f}] across {len(valid_measurements)} measurements")
         else:
             if progress_callback:
-                progress_callback(7, f"Using individual color ranges for each measurement")
+                progress_callback(7, "Using individual color ranges for each measurement")
 
         # Update progress calculation for valid measurements
         measurements = valid_measurements
@@ -594,13 +620,19 @@ class GammaInterpolator(ScriptInterface):
 
             # Use minimum curvature interpolation for better results
             if progress_callback:
-                progress_callback(int(current_progress + progress_per_meas * 0.1), f"🔬 Applying minimum curvature interpolation for {measurement}...")
+                if NUMBA_AVAILABLE:
+                    progress_callback(int(current_progress + progress_per_meas * 0.1), f"🚀 Applying JIT-compiled minimum curvature interpolation for {measurement}...")
+                else:
+                    progress_callback(int(current_progress + progress_per_meas * 0.1), f"🔬 Applying minimum curvature interpolation for {measurement}...")
             
             if method == 'minimum_curvature':
                 # Use advanced minimum curvature interpolation
                 try:
                     if progress_callback:
-                        progress_callback(int(current_progress + progress_per_meas * 0.12), f"🔬 Starting minimum curvature with {grid_resolution}x{grid_resolution} grid...")
+                        if NUMBA_AVAILABLE:
+                            progress_callback(int(current_progress + progress_per_meas * 0.12), f"🚀 Starting JIT-compiled minimum curvature with {grid_resolution}x{grid_resolution} grid...")
+                        else:
+                            progress_callback(int(current_progress + progress_per_meas * 0.12), f"🔬 Starting minimum curvature with {grid_resolution}x{grid_resolution} grid...")
                     
                     # Create minimum curvature interpolation - note coordinate order (lon, lat)
                     lon_mesh, lat_mesh, interpolated = self.minimum_curvature_interpolation(
@@ -613,7 +645,10 @@ class GammaInterpolator(ScriptInterface):
                     )
                     
                     if progress_callback:
-                        progress_callback(int(current_progress + progress_per_meas * 0.82), f"✅ Minimum curvature interpolation completed")
+                        if NUMBA_AVAILABLE:
+                            progress_callback(int(current_progress + progress_per_meas * 0.82), "✅ JIT-compiled minimum curvature interpolation completed")
+                        else:
+                            progress_callback(int(current_progress + progress_per_meas * 0.82), "✅ Minimum curvature interpolation completed")
                     
                 except Exception as mc_error:
                     if progress_callback:
@@ -666,10 +701,10 @@ class GammaInterpolator(ScriptInterface):
                     interpolated = np.where(boundary_mask, interpolated, np.nan)
                     
                     if progress_callback:
-                        progress_callback(int(current_progress + progress_per_meas * 0.86), f"✅ Boundary masking applied")
+                        progress_callback(int(current_progress + progress_per_meas * 0.86), "✅ Boundary masking applied")
                 except Exception:
                     if progress_callback:
-                        progress_callback(int(current_progress + progress_per_meas * 0.86), f"⚠️ Boundary masking failed, skipping...")
+                        progress_callback(int(current_progress + progress_per_meas * 0.86), "⚠️ Boundary masking failed, skipping...")
 
             # Clip extreme values to avoid colormap issues  
             interpolated_clipped = np.clip(interpolated, vmin, vmax)
