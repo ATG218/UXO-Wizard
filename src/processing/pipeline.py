@@ -388,6 +388,7 @@ class ProcessingPipeline(QObject):
                 logger.error(f"✗ Failed to save interactive plot: {e}")
             
             # Optionally save static PNG file (secondary format)
+            """
             png_path = Path(output_dir) / f"{base_name}.png"
             try:
                 result.figure.savefig(png_path, dpi=300, bbox_inches='tight')
@@ -395,7 +396,7 @@ class ProcessingPipeline(QObject):
                 logger.info(f"✓ Auto-saved static plot: {png_path}")
             except Exception as e:
                 logger.warning(f"✗ Failed to save static plot: {e}")
-            
+            """
             # Add plot files to result outputs
             for file_type, file_path, description in plot_files:
                 result.add_output_file(file_path, file_type, description)
