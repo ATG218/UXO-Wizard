@@ -750,7 +750,461 @@ Example layer groups:
 - **Subsampling**: Create overview layers for large datasets
 - **Memory**: Large raster layers should be optimized or tiled
 
-## 5. Best Practices and Recommendations
+## 5. Universal Minimum Curvature Interpolation System
+
+The UXO Wizard framework now includes a powerful minimum curvature interpolation system built into the `BaseProcessor` class. This system provides all processors with access to professional-grade interpolation methods that eliminate flight line artifacts and provide superior data quality.
+
+### 5.1 Overview
+
+The minimum curvature interpolation system was developed by extracting the best features from both the gamma and magnetic interpolators, creating a unified implementation that all processors can inherit and use.
+
+#### **Key Features**
+- **Soft Constraints**: Eliminates flight line artifacts using influence zones
+- **Hard Constraints**: Traditional minimum curvature with exact data point fitting
+- **JIT Compilation**: Numba-optimized functions for maximum performance
+- **Boundary Masking**: Prevents extrapolation outside data coverage
+- **Universal Access**: Available to all processors through inheritance
+
+#### **Implementation Benefits**
+- **Consistency**: All processors use the same high-quality interpolation
+- **Performance**: JIT compilation provides significant speed improvements
+- **Maintainability**: Single codebase to improve and debug
+- **Flexibility**: Both constraint modes available based on use case
+
+### 5.2 Using Minimum Curvature Interpolation
+
+#### **Basic Usage**
+Any script can access the minimum curvature interpolation methods through the BaseProcessor:
+
+```python
+from src.processing.base import BaseProcessor
+
+class MyInterpolationScript(ScriptInterface):
+    def __init__(self):
+        # Create helper to access BaseProcessor methods
+        self._base_processor = _InterpolationHelper()
+    
+    def execute(self, data, params, progress_callback=None, input_file_path=None):
+        # Extract coordinates and values
+        x = data['longitude'].values
+        y = data['latitude'].values
+        z = data['field_value'].values
+        
+        # Perform minimum curvature interpolation
+        grid_x, grid_y, grid_z = self._base_processor.minimum_curvature_interpolation(
+            x, y, z,
+            grid_resolution=150,
+            constraint_mode='soft',  # or 'hard'
+            max_iterations=1000,
+            tolerance=1e-6,
+            progress_callback=progress_callback
+        )
+        
+        # Apply boundary masking
+        mask = self._base_processor.create_boundary_mask(x, y, grid_x, grid_y)
+        grid_z = np.where(mask, grid_z, np.nan)
+        
+        return ProcessingResult(success=True, data=processed_data)
+
+# Helper class for accessing BaseProcessor methods
+class _InterpolationHelper(BaseProcessor):
+    def validate_data(self, data):
+        return True
+```
+
+#### **Advanced Usage with Parameters**
+```python
+def get_parameters(self):
+    return {
+        'interpolation_parameters': {
+            'grid_resolution': {
+                'value': 150,
+                'type': 'int',
+                'min': 20,
+                'max': 500,
+                'description': 'Grid resolution (points per axis)'
+            },
+            'constraint_mode': {
+                'value': 'soft',
+                'type': 'choice',
+                'choices': ['soft', 'hard'],
+                'description': 'Constraint mode: soft (eliminates flight line artifacts) or hard (traditional)'
+            },
+            'max_iterations': {
+                'value': 1000,
+                'type': 'int',
+                'description': 'Maximum iterations for convergence'
+            },
+            'tolerance': {
+                'value': 1e-6,
+                'type': 'float',
+                'description': 'Convergence tolerance'
+            }
+        }
+    }
+```
+
+### 5.3 Constraint Modes
+
+#### **Soft Constraints (Recommended)**
+- **Purpose**: Eliminates flight line artifacts in survey data
+- **Method**: Uses influence zones around data points with weighted blending
+- **Benefits**: Smoother results, better for flight line data, reduces artifacts
+- **Use Case**: Gamma radiation data, magnetic surveys with flight lines
+
+```python
+grid_x, grid_y, grid_z = self._base_processor.minimum_curvature_interpolation(
+    x, y, z,
+    constraint_mode='soft',
+    influence_radius=None,  # Auto-calculated based on data density
+    progress_callback=progress_callback
+)
+```
+
+#### **Hard Constraints (Traditional)**
+- **Purpose**: Exact fitting of data points
+- **Method**: Fixes data points exactly during interpolation
+- **Benefits**: Preserves original data values precisely
+- **Use Case**: Precise measurement data, calibration points
+
+```python
+grid_x, grid_y, grid_z = self._base_processor.minimum_curvature_interpolation(
+    x, y, z,
+    constraint_mode='hard',
+    progress_callback=progress_callback
+)
+```
+
+### 5.4 Boundary Masking
+
+The system includes comprehensive boundary masking to prevent unreliable extrapolation:
+
+```python
+# Create boundary mask
+mask = self._base_processor.create_boundary_mask(
+    x, y, grid_x, grid_y, 
+    method='convex_hull'  # or 'alpha_shape'
+)
+
+# Apply mask to interpolated data
+grid_z = np.where(mask, grid_z, np.nan)
+```
+
+#### **Boundary Methods**
+- **convex_hull**: Creates convex hull around data points
+- **alpha_shape**: Distance-based boundary detection
+
+### 5.5 Performance Optimization
+
+The interpolation system includes several performance optimizations:
+
+#### **JIT Compilation**
+- **Numba Support**: Automatic JIT compilation for core functions
+- **Fallback Support**: Python fallback when Numba unavailable
+- **Performance Gain**: 10-100x speedup on large datasets
+
+#### **Progress Reporting**
+```python
+def progress_callback(percentage, message):
+    print(f"{percentage:.1f}%: {message}")
+
+grid_x, grid_y, grid_z = self._base_processor.minimum_curvature_interpolation(
+    x, y, z,
+    progress_callback=progress_callback
+)
+```
+
+### 5.6 Integration Examples
+
+#### **Grid Interpolator Integration**
+The magnetic grid interpolator has been updated to use the new system:
+
+```python
+# Now supports both soft and hard constraints
+def execute(self, data, params, progress_callback=None, input_file_path=None):
+    # Extract constraint mode from parameters
+    constraint_mode = params.get('interpolation_parameters', {}).get('constraint_mode', {}).get('value', 'soft')
+    
+    # Use enhanced interpolation method
+    grid_X, grid_Y, grid_z = self.minimum_curvature_interpolation_enhanced(
+        x, y, z, 
+        grid_resolution=grid_resolution,
+        constraint_mode=constraint_mode,
+        progress_callback=progress_callback
+    )
+```
+
+#### **Gamma Interpolator Compatibility**
+The gamma interpolator continues to use its optimized soft constraint implementation while benefiting from the shared codebase.
+
+### 5.7 Best Practices for Interpolation
+
+#### **Choose the Right Constraint Mode**
+- **Use soft constraints** for flight line data to eliminate artifacts
+- **Use hard constraints** for precise measurement data
+- **Default to soft** for most geophysical survey data
+
+#### **Optimize Grid Resolution**
+- **Start with 150-300** points per axis for most datasets
+- **Increase for detailed analysis** (up to 500)
+- **Decrease for performance** (down to 50)
+
+#### **Monitor Convergence**
+- **Use progress callbacks** to monitor iteration progress
+- **Set reasonable tolerance** (1e-6 typical)
+- **Limit iterations** to prevent infinite loops (1000 typical)
+
+## 6. Enhanced File and Layer Output System
+
+The UXO Wizard framework provides a comprehensive output system for both file generation and map layer creation. This system automates file management, layer generation, and provides rich metadata for all outputs.
+
+### 6.1 File Output System
+
+#### **Automatic File Management**
+The framework automatically handles file creation, naming, and organization:
+
+```python
+def execute(self, data, params, progress_callback=None, input_file_path=None):
+    result = ProcessingResult(success=True, data=processed_data)
+    
+    # Files are automatically saved to project/processed/processor_type/
+    result.add_output_file(
+        file_path=str(diagnostic_plot_path),
+        file_type='png',
+        description='Interpolation diagnostic plots'
+    )
+    
+    result.add_output_file(
+        file_path=str(grid_csv_path),
+        file_type='csv',
+        description='Interpolated grid data'
+    )
+    
+    return result
+```
+
+#### **File Organization Structure**
+```
+project_directory/
+├── processed/
+│   ├── magnetic/
+│   │   ├── survey_data_grid_interpolator_20250716_143052.png
+│   │   ├── survey_data_grid_interpolator_20250716_143052.csv
+│   │   └── survey_data_grid_interpolator_20250716_143052.mplplot
+│   ├── gamma/
+│   │   ├── radiation_data_gamma_interpolator_20250716_143122.png
+│   │   └── radiation_data_gamma_interpolator_20250716_143122.csv
+│   └── gpr/
+```
+
+#### **Supported File Types**
+- **PNG**: High-resolution plots (300 DPI)
+- **CSV**: Processed data tables
+- **MPLPLOT**: Interactive matplotlib plots
+- **JSON**: Metadata and analysis results
+- **GEOTIFF**: Georeferenced raster data
+- **HTML**: Interactive reports
+
+### 6.2 Layer Output System
+
+#### **Automatic Layer Generation**
+The framework converts processing outputs into map layers automatically:
+
+```python
+def execute(self, data, params, progress_callback=None, input_file_path=None):
+    result = ProcessingResult(success=True, data=processed_data)
+    
+    # Create unique layer name with timestamp
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+    layer_name = f'{input_filename} - Interpolated Field ({timestamp})'
+    
+    # Add raster layer for interpolated data
+    result.add_layer_output(
+        layer_type='raster',
+        data={
+            'grid': grid_z,
+            'bounds': [min_x, min_y, max_x, max_y],
+            'field_name': field_column
+        },
+        style_info={
+            'use_graduated_colors': True,
+            'opacity': 0.7,
+            'color_ramp': ["#000080", "#0000FF", "#00FFFF", "#00FF00", "#FFFF00", "#FF8000", "#FF0000"]
+        },
+        metadata={
+            'layer_name': layer_name,
+            'description': 'Interpolated magnetic field data',
+            'data_type': 'interpolated_grid',
+            'grid_shape': grid_z.shape,
+            'processing_method': 'minimum_curvature',
+            'constraint_mode': constraint_mode
+        }
+    )
+    
+    # Add point layer for original data
+    result.add_layer_output(
+        layer_type='points',
+        data=original_data,
+        style_info={
+            'color_field': field_column,
+            'use_graduated_colors': True,
+            'size': 4,
+            'opacity': 0.8
+        },
+        metadata={
+            'layer_name': f'{input_filename} - Original Data ({timestamp})',
+            'description': 'Original survey data points',
+            'data_type': 'survey_data',
+            'total_points': len(original_data)
+        }
+    )
+    
+    return result
+```
+
+#### **Layer Types and Usage**
+
+**Raster Layers** - For interpolated grids:
+```python
+result.add_layer_output(
+    layer_type='raster',
+    data={
+        'grid': numpy_array,           # 2D numpy array
+        'bounds': [x_min, y_min, x_max, y_max],  # Spatial bounds
+        'field_name': 'field_column'   # Source field name
+    },
+    style_info={
+        'use_graduated_colors': True,
+        'opacity': 0.7,
+        'color_ramp': custom_colors
+    },
+    metadata={
+        'layer_name': unique_name,
+        'description': 'Layer description',
+        'data_type': 'interpolated_grid',
+        'grid_shape': (ny, nx),
+        'processing_method': 'minimum_curvature'
+    }
+)
+```
+
+**Point Layers** - For coordinate data:
+```python
+result.add_layer_output(
+    layer_type='points',
+    data=dataframe_with_coords,  # DataFrame with lat/lon columns
+    style_info={
+        'color_field': 'value_column',
+        'use_graduated_colors': True,
+        'size': 4,
+        'opacity': 0.8,
+        'enable_clustering': True
+    },
+    metadata={
+        'layer_name': unique_name,
+        'description': 'Survey data points',
+        'data_type': 'survey_data',
+        'total_points': len(dataframe_with_coords),
+        'coordinate_columns': {'latitude': 'lat', 'longitude': 'lon'}
+    }
+)
+```
+
+**Vector Layers** - For lines and paths:
+```python
+result.add_layer_output(
+    layer_type='flight_lines',
+    data=flight_path_dataframe,
+    style_info={
+        'line_color': '#FF6600',
+        'line_width': 2,
+        'line_opacity': 0.9
+    },
+    metadata={
+        'layer_name': unique_name,
+        'description': 'Survey flight path',
+        'data_type': 'flight_path'
+    }
+)
+```
+
+### 6.3 Processor-Specific Styling
+
+#### **Magnetic Data Styling**
+```python
+magnetic_style = {
+    'color_ramp': ["#000080", "#0000FF", "#00FFFF", "#00FF00", "#FFFF00", "#FF8000", "#FF0000"],
+    'use_graduated_colors': True,
+    'opacity': 0.8
+}
+```
+
+#### **Gamma Radiation Styling**
+```python
+gamma_style = {
+    'color_ramp': ["#004400", "#008800", "#00CC00", "#CCCC00", "#CC8800", "#CC0000"],
+    'use_graduated_colors': True,
+    'opacity': 0.9
+}
+```
+
+#### **GPR Data Styling**
+```python
+gpr_style = {
+    'color_ramp': ["#000066", "#0066CC", "#66CCFF", "#CCCCCC", "#FFCC66", "#CC6600"],
+    'use_graduated_colors': True,
+    'opacity': 0.8
+}
+```
+
+### 6.4 Metadata and Documentation
+
+#### **Rich Metadata System**
+```python
+result.metadata.update({
+    'processor': 'magnetic',
+    'processing_method': 'minimum_curvature',
+    'constraint_mode': constraint_mode,
+    'grid_resolution': grid_resolution,
+    'field_processed': field_column,
+    'data_points': len(original_data),
+    'valid_points': len(valid_data),
+    'boundary_masking': enable_masking,
+    'numba_acceleration': NUMBA_AVAILABLE,
+    'processing_time': processing_time,
+    'convergence_iterations': actual_iterations,
+    'coordinate_system': detected_crs
+})
+```
+
+#### **Layer Metadata**
+```python
+layer_metadata = {
+    'layer_name': unique_layer_name,
+    'description': detailed_description,
+    'data_type': classification,
+    'processing_history': [processor_type, script_name],
+    'creation_timestamp': timestamp,
+    'source_file': input_file_path,
+    'processing_parameters': relevant_params
+}
+```
+
+### 6.5 Integration with UXO Wizard
+
+#### **Automatic Processing**
+- **File Auto-saving**: All outputs automatically saved to project structure
+- **Layer Auto-creation**: Layers appear immediately in map interface
+- **Metadata Generation**: JSON sidecar files created automatically
+- **Progress Tracking**: Real-time updates during processing
+
+#### **User Experience**
+- **No Manual File Management**: Everything handled automatically
+- **Unique Naming**: Timestamps prevent overwrites
+- **Immediate Visualization**: Layers appear in map as soon as processing completes
+- **Interactive Plots**: Saved plots maintain full matplotlib functionality
+
+## 7. Best Practices and Recommendations
 
 ### 5.1 Essential Requirements
 

@@ -15,6 +15,29 @@ import glob
 import importlib.util
 import sys
 import numpy as np
+from scipy.interpolate import griddata
+from scipy.spatial.distance import pdist
+
+# Try to import Numba for JIT compilation
+try:
+    from numba import jit
+    NUMBA_AVAILABLE = True
+except ImportError:
+    # Define a no-op decorator if Numba is not available
+    def jit(*_args, **_kwargs):
+        def decorator(func):
+            return func
+        return decorator
+    NUMBA_AVAILABLE = False
+
+# Additional imports for boundary masking
+try:
+    from scipy.spatial import ConvexHull
+    from scipy.spatial.distance import cdist
+    from matplotlib.path import Path as MplPath
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
 
 # Import layer system components for layer generation
 try:
@@ -72,7 +95,7 @@ class ProcessingResult:
     processor_type: Optional[str] = None          # "magnetic", "gamma", etc.
     script_id: Optional[str] = None              # Which script was used
     output_files: List[OutputFile] = field(default_factory=list)      # All generated files
-    layer_outputs: List[LayerOutput] = field(default_factory=list)    # Data for future layer system
+    layer_outputs: List[LayerOutput] = field(default_factory=list)
     figure: Optional[Figure] = None  # Matplotlib figure for direct display
     
     def __post_init__(self):
@@ -941,4 +964,452 @@ class BaseProcessor(ABC):
         for i in range(0, len(data), step):
             frames.append(data.iloc[:i+step])
             
-        return frames 
+        return frames
+    
+    # ===== MINIMUM CURVATURE INTERPOLATION METHODS =====
+    # Universal interpolation methods inherited by all processors
+    
+    def minimum_curvature_interpolation(self, x, y, z, grid_resolution=150, 
+                                        max_iterations=1000, tolerance=1e-6, 
+                                        omega=1.8, constraint_mode='soft',
+                                        influence_radius=None, progress_callback=None):
+        """
+        Universal minimum curvature interpolation method for all processors
+        
+        Args:
+            x, y, z: Data coordinates and values
+            grid_resolution: Number of grid points per axis
+            max_iterations: Maximum iterations for convergence
+            tolerance: Convergence tolerance
+            omega: Relaxation factor for successive over-relaxation
+            constraint_mode: 'soft' (gamma style) or 'hard' (traditional)
+            influence_radius: For soft constraints, auto-calculated if None
+            progress_callback: Progress reporting function
+        
+        Returns:
+            grid_x, grid_y, grid_z: Interpolated grid coordinates and values
+        """
+        if progress_callback:
+            progress_callback(5, "Setting up interpolation grid...")
+        
+        # Create regular grid
+        x_min, x_max = np.min(x), np.max(x)
+        y_min, y_max = np.min(y), np.max(y)
+        
+        # Add minimal padding to grid bounds
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+        padding = 0.01  # 1% padding
+        
+        x_min -= padding * x_range
+        x_max += padding * x_range
+        y_min -= padding * y_range
+        y_max += padding * y_range
+        
+        grid_x = np.linspace(x_min, x_max, grid_resolution)
+        grid_y = np.linspace(y_min, y_max, grid_resolution)
+        grid_X, grid_Y = np.meshgrid(grid_x, grid_y)
+        
+        # Initialize grid with linear interpolation first
+        if progress_callback:
+            progress_callback(10, "Creating initial grid with linear interpolation...")
+        
+        # Create initial grid using linear interpolation to fill entire domain
+        grid_z_initial = griddata((x, y), z, (grid_X, grid_Y), method='linear', fill_value=np.nan)
+        
+        if progress_callback:
+            progress_callback(15, "Filling gaps with nearest neighbor interpolation...")
+        
+        # Fill any remaining NaN values with nearest neighbor interpolation
+        nan_mask = np.isnan(grid_z_initial)
+        if np.any(nan_mask):
+            grid_z_nearest = griddata((x, y), z, (grid_X, grid_Y), method='nearest', fill_value=np.mean(z))
+            grid_z_initial[nan_mask] = grid_z_nearest[nan_mask]
+        
+        grid_z = grid_z_initial.copy()
+        
+        # Apply constraint mode
+        if constraint_mode == 'soft':
+            return self._minimum_curvature_soft_constraints(
+                x, y, z, grid_X, grid_Y, grid_z, grid_x, grid_y,
+                max_iterations, tolerance, omega, influence_radius, progress_callback
+            )
+        else:
+            return self._minimum_curvature_hard_constraints(
+                x, y, z, grid_X, grid_Y, grid_z,
+                max_iterations, tolerance, omega, progress_callback
+            )
+    
+    def _minimum_curvature_soft_constraints(self, x, y, z, grid_X, grid_Y, grid_z, 
+                                           grid_x, grid_y, max_iterations, tolerance, 
+                                           omega, influence_radius, progress_callback):
+        """Minimum curvature with soft constraints (gamma interpolator style)"""
+        if progress_callback:
+            progress_callback(20, "Creating soft data constraints...")
+        
+        # Use soft constraints instead of hard constraints
+        ny, nx = grid_z.shape
+        x_min, x_max = np.min(grid_x), np.max(grid_x)
+        y_min, y_max = np.min(grid_y), np.max(grid_y)
+        dx = (x_max - x_min) / (nx - 1)
+        dy = (y_max - y_min) / (ny - 1)
+        
+        # Calculate influence radius if not provided
+        if influence_radius is None:
+            x_range = x_max - x_min
+            y_range = y_max - y_min
+            data_density = len(x) / (x_range * y_range)
+            influence_radius = max(2 * dx, 2 * dy, 1.0 / np.sqrt(data_density))
+            
+            # Limit influence radius for performance with large grids
+            max_reasonable_radius = min(x_range, y_range) * 0.1  # 10% of data range
+            influence_radius = min(influence_radius, max_reasonable_radius)
+        
+        if progress_callback:
+            progress_callback(22, f"Influence radius: {influence_radius:.4f} for {len(x)} data points on {ny}x{nx} grid")
+        
+        # Convert to numpy arrays for JIT compilation
+        x_array = np.asarray(x, dtype=np.float64)
+        y_array = np.asarray(y, dtype=np.float64)
+        z_array = np.asarray(z, dtype=np.float64)
+        
+        # Create influence weights and target values
+        if progress_callback:
+            if NUMBA_AVAILABLE:
+                progress_callback(25, "🚀 Using JIT-compiled influence zones...")
+            else:
+                progress_callback(25, "Creating influence zones...")
+        
+        influence_weights, target_values = self._create_influence_weights_numba(
+            x_array, y_array, z_array, grid_x, grid_y, influence_radius
+        )
+        
+        # Normalize influence weights to [0, 1] range for stability
+        max_weight = np.max(influence_weights)
+        if max_weight > 0:
+            influence_weights = influence_weights / max_weight
+        
+        if progress_callback:
+            progress_callback(35, f"Influence zones created successfully (max weight: {max_weight:.3f})")
+        
+        # Value bounds for stability
+        data_range = np.ptp(z)
+        data_mean = np.mean(z)
+        min_allowed = data_mean - 3 * data_range
+        max_allowed = data_mean + 3 * data_range
+        
+        if progress_callback:
+            progress_callback(40, "Starting minimum curvature iterations with soft constraints...")
+        
+        # Use stable omega value for soft constraints
+        omega = 0.5  # Lower omega for stability
+        
+        if progress_callback:
+            if NUMBA_AVAILABLE:
+                progress_callback(45, f"🚀 Starting {max_iterations} JIT-compiled iterations...")
+            else:
+                progress_callback(45, f"Starting {max_iterations} iterations...")
+        
+        # Iterative minimum curvature with soft constraints
+        for iteration in range(max_iterations):
+            # Use JIT-compiled function for the iteration
+            max_change = self._minimum_curvature_iteration_numba(
+                grid_z, influence_weights, target_values, omega, min_allowed, max_allowed
+            )
+            
+            # Apply boundary conditions
+            self._apply_boundary_conditions_numba(grid_z)
+            
+            # Early detection of instability
+            if max_change > data_range:
+                if progress_callback:
+                    progress_callback(80, f"Large change detected at iteration {iteration+1}, stopping early")
+                break
+            
+            # Progress update
+            if progress_callback:
+                progress = 45 + 35 * ((iteration + 1) / max_iterations)
+                convergence_info = f"max change: {max_change:.2e}"
+                if max_change < tolerance * 10:
+                    convergence_info += " (converging)"
+                progress_callback(int(progress), f"Iteration {iteration+1}/{max_iterations}, {convergence_info}")
+            
+            # Check for convergence
+            if max_change < tolerance:
+                if progress_callback:
+                    progress_callback(80, f"Converged after {iteration+1} iterations (change: {max_change:.2e})")
+                break
+        
+        if progress_callback:
+            if NUMBA_AVAILABLE:
+                progress_callback(85, "🚀 JIT-compiled minimum curvature interpolation complete")
+            else:
+                progress_callback(85, "Minimum curvature interpolation complete")
+        
+        return grid_X, grid_Y, grid_z
+    
+    def _minimum_curvature_hard_constraints(self, x, y, z, grid_X, grid_Y, grid_z,
+                                           max_iterations, tolerance, omega, progress_callback):
+        """Minimum curvature with hard constraints (traditional style)"""
+        if progress_callback:
+            progress_callback(20, "Setting up hard constraints...")
+        
+        # Create mask for data points
+        ny, nx = grid_z.shape
+        constraint_mask = np.zeros((ny, nx), dtype=bool)
+        
+        # Find nearest grid points for each data point
+        x_min, x_max = np.min(grid_X), np.max(grid_X)
+        y_min, y_max = np.min(grid_Y), np.max(grid_Y)
+        
+        for i in range(len(x)):
+            # Convert data point to grid indices
+            j = int(round((x[i] - x_min) / (x_max - x_min) * (nx - 1)))
+            i_idx = int(round((y[i] - y_min) / (y_max - y_min) * (ny - 1)))
+            
+            # Clamp to valid range
+            j = max(0, min(nx - 1, j))
+            i_idx = max(0, min(ny - 1, i_idx))
+            
+            # Set constraint
+            constraint_mask[i_idx, j] = True
+            grid_z[i_idx, j] = z[i]
+        
+        if progress_callback:
+            progress_callback(40, "Starting minimum curvature iterations with hard constraints...")
+        
+        # Iterative minimum curvature with hard constraints
+        for iteration in range(max_iterations):
+            max_change = 0.0
+            
+            # Update interior points using 5-point stencil
+            for i in range(1, ny-1):
+                for j in range(1, nx-1):
+                    if not constraint_mask[i, j]:  # Skip constrained points
+                        old_value = grid_z[i, j]
+                        
+                        # 5-point stencil for Laplacian
+                        neighbors = (grid_z[i+1, j] + grid_z[i-1, j] + 
+                                   grid_z[i, j+1] + grid_z[i, j-1]) / 4.0
+                        
+                        # Successive over-relaxation
+                        new_value = old_value + omega * (neighbors - old_value)
+                        grid_z[i, j] = new_value
+                        
+                        # Track maximum change
+                        change = abs(new_value - old_value)
+                        if change > max_change:
+                            max_change = change
+            
+            # Apply boundary conditions
+            self._apply_boundary_conditions_numba(grid_z)
+            
+            # Progress update
+            if progress_callback:
+                progress = 40 + 40 * ((iteration + 1) / max_iterations)
+                progress_callback(int(progress), f"Iteration {iteration+1}/{max_iterations}, max change: {max_change:.2e}")
+            
+            # Check for convergence
+            if max_change < tolerance:
+                if progress_callback:
+                    progress_callback(80, f"Converged after {iteration+1} iterations")
+                break
+        
+        if progress_callback:
+            progress_callback(85, "Minimum curvature interpolation complete")
+        
+        return grid_X, grid_Y, grid_z
+    
+    def create_boundary_mask(self, x, y, grid_x, grid_y, method='convex_hull'):
+        """
+        Create a boundary mask to prevent interpolation outside data coverage.
+        
+        Args:
+            x, y: Data point coordinates
+            grid_x, grid_y: Grid meshgrid coordinates
+            method: 'convex_hull' or 'alpha_shape'
+        
+        Returns:
+            mask: Boolean array where True indicates points inside the data boundary
+        """
+        if not SCIPY_AVAILABLE:
+            # Return all True mask if scipy is not available
+            return np.ones(grid_x.shape, dtype=bool)
+        
+        try:
+            # Get data points as array
+            data_points = np.column_stack([x, y])
+            
+            # Get grid points as array
+            grid_points = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+            
+            if method == 'convex_hull':
+                # Create convex hull
+                hull = ConvexHull(data_points)
+                
+                # Check which grid points are inside the convex hull
+                hull_path = MplPath(data_points[hull.vertices])
+                mask_1d = hull_path.contains_points(grid_points)
+                
+            elif method == 'alpha_shape':
+                # Simple distance-based approach as alpha shape approximation
+                # For each grid point, check if it's within reasonable distance of data
+                distances = cdist(grid_points, data_points)
+                min_distances = np.min(distances, axis=1)
+                
+                # Use median nearest neighbor distance as threshold
+                nn_distances = []
+                for i in range(len(data_points)):
+                    dists = cdist([data_points[i]], data_points)[0]
+                    dists = dists[dists > 0]  # Remove self-distance
+                    if len(dists) > 0:
+                        nn_distances.append(np.min(dists))
+                
+                threshold = np.median(nn_distances) * 2.0 if nn_distances else 0.01
+                mask_1d = min_distances <= threshold
+            
+            else:
+                raise ValueError(f"Unknown boundary method: {method}")
+            
+            # Reshape to grid shape
+            mask = mask_1d.reshape(grid_x.shape)
+            
+            return mask
+            
+        except Exception:
+            # Fallback to no masking
+            return np.ones(grid_x.shape, dtype=bool)
+    
+    @jit(nopython=True, cache=True)
+    def _create_influence_weights_numba(self, x, y, z, grid_x_coords, grid_y_coords, influence_radius):
+        """
+        JIT-compiled function to create influence weights and target values for soft constraints.
+        
+        Args:
+            x, y, z: Data point coordinates and values (1D arrays)
+            grid_x_coords, grid_y_coords: Grid coordinate arrays (1D arrays)
+            influence_radius: Influence radius for soft constraints
+        
+        Returns:
+            influence_weights: 2D array of influence weights
+            target_values: 2D array of target values
+        """
+        ny = len(grid_y_coords)
+        nx = len(grid_x_coords)
+        
+        influence_weights = np.zeros((ny, nx))
+        target_values = np.zeros((ny, nx))
+        
+        # Grid spacing
+        dx = grid_x_coords[1] - grid_x_coords[0] if nx > 1 else 1.0
+        dy = grid_y_coords[1] - grid_y_coords[0] if ny > 1 else 1.0
+        
+        # For each data point, create influence zone
+        for data_idx in range(len(x)):
+            xi, yi, zi = x[data_idx], y[data_idx], z[data_idx]
+            
+            # Convert to grid coordinates
+            gi = (yi - grid_y_coords[0]) / dy
+            gj = (xi - grid_x_coords[0]) / dx
+            
+            # Calculate grid range that could be influenced
+            i_min = max(0, int(gi - influence_radius/dy))
+            i_max = min(ny, int(gi + influence_radius/dy) + 1)
+            j_min = max(0, int(gj - influence_radius/dx))
+            j_max = min(nx, int(gj + influence_radius/dx) + 1)
+            
+            # Create influence zone around this data point
+            for i in range(i_min, i_max):
+                for j in range(j_min, j_max):
+                    # Calculate distance from grid point to data point
+                    grid_y_coord = grid_y_coords[i]
+                    grid_x_coord = grid_x_coords[j]
+                    distance = np.sqrt((grid_x_coord - xi)**2 + (grid_y_coord - yi)**2)
+                    
+                    if distance <= influence_radius:
+                        # Gaussian-like weight function
+                        weight = np.exp(-(distance / (influence_radius * 0.3))**2)
+                        
+                        # Accumulate weighted influence
+                        old_weight = influence_weights[i, j]
+                        new_weight = old_weight + weight
+                        
+                        if new_weight > 0:
+                            # Weighted average of target values
+                            target_values[i, j] = (target_values[i, j] * old_weight + zi * weight) / new_weight
+                            influence_weights[i, j] = new_weight
+        
+        return influence_weights, target_values
+    
+    @jit(nopython=True, cache=True)
+    def _minimum_curvature_iteration_numba(self, grid_z, influence_weights, target_values, 
+                                          omega, min_allowed, max_allowed):
+        """
+        JIT-compiled function for a single minimum curvature iteration with soft constraints.
+        
+        Args:
+            grid_z: Current grid values (modified in-place)
+            influence_weights: Influence weights for soft constraints
+            target_values: Target values for soft constraints
+            omega: Relaxation factor
+            min_allowed, max_allowed: Value bounds for stability
+        
+        Returns:
+            max_change: Maximum change in this iteration
+        """
+        ny, nx = grid_z.shape
+        max_change = 0.0
+        
+        # Update interior points using 5-point stencil with soft constraints
+        for i in range(1, ny-1):
+            for j in range(1, nx-1):
+                old_value = grid_z[i, j]
+                
+                # 5-point stencil for Laplacian
+                neighbors = (grid_z[i+1, j] + grid_z[i-1, j] + 
+                           grid_z[i, j+1] + grid_z[i, j-1]) / 4.0
+                
+                # Successive over-relaxation
+                new_value = old_value + omega * (neighbors - old_value)
+                
+                # Apply soft data constraint if there's influence at this point
+                if influence_weights[i, j] > 0.01:  # Only apply if significant influence
+                    constraint_strength = influence_weights[i, j] * 0.1  # Reduce constraint strength
+                    target = target_values[i, j]
+                    # Blend the relaxed value with the target value
+                    new_value = new_value * (1 - constraint_strength) + target * constraint_strength
+                
+                # Clamp values for stability
+                new_value = max(min_allowed, min(max_allowed, new_value))
+                
+                grid_z[i, j] = new_value
+                
+                # Track maximum change
+                change = abs(new_value - old_value)
+                if change > max_change:
+                    max_change = change
+        
+        return max_change
+    
+    @jit(nopython=True, cache=True)
+    def _apply_boundary_conditions_numba(self, grid_z):
+        """
+        JIT-compiled function to apply boundary conditions (zero second derivative).
+        
+        Args:
+            grid_z: Grid values (modified in-place)
+        """
+        ny, nx = grid_z.shape
+        
+        # Apply boundary conditions
+        if ny >= 3:
+            # Top and bottom boundaries (zero second derivative)
+            for j in range(nx):
+                grid_z[0, j] = 2*grid_z[1, j] - grid_z[2, j]
+                grid_z[ny-1, j] = 2*grid_z[ny-2, j] - grid_z[ny-3, j]
+        
+        if nx >= 3:
+            # Left and right boundaries (zero second derivative)
+            for i in range(ny):
+                grid_z[i, 0] = 2*grid_z[i, 1] - grid_z[i, 2]
+                grid_z[i, nx-1] = 2*grid_z[i, nx-2] - grid_z[i, nx-3] 

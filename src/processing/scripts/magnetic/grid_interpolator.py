@@ -25,36 +25,25 @@ from typing import Dict, Any, Optional, Callable
 import tempfile
 import datetime
 import warnings
+
+from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError, NUMBA_AVAILABLE, jit, BaseProcessor
+
 warnings.filterwarnings('ignore')
 
-from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError
 
-# Try to import Numba for JIT compilation
-try:
-    from numba import jit
-    NUMBA_AVAILABLE = True
-except ImportError:
-    # Define a no-op decorator if Numba is not available
-    def jit(*_args, **_kwargs):
-        def decorator(func):
-            return func
-        return decorator
-    NUMBA_AVAILABLE = False
-
-# Additional imports for boundary masking
-try:
-    from scipy.spatial import ConvexHull
-    from scipy.spatial.distance import cdist
-    from matplotlib.path import Path as MplPath
-    SCIPY_AVAILABLE = True
-except ImportError:
-    SCIPY_AVAILABLE = False
-
+class _GridInterpolatorHelper(BaseProcessor):
+    """Helper class to access BaseProcessor methods"""
+    def validate_data(self, data):
+        return True
 
 class GridInterpolator(ScriptInterface):
     """
     Grid interpolation script for magnetic survey data processing
     """
+    
+    def __init__(self):
+        # Initialize a helper processor instance for access to BaseProcessor methods
+        self._base_processor = _GridInterpolatorHelper()
     
     @property
     def name(self) -> str:
@@ -62,7 +51,7 @@ class GridInterpolator(ScriptInterface):
     
     @property  
     def description(self) -> str:
-        return "Perform 2D grid interpolation of magnetic survey data using minimum curvature method"
+        return "Perform 2D grid interpolation of magnetic survey data using minimum curvature method with soft constraints to eliminate flight line artifacts"
     
     def get_parameters(self) -> Dict[str, Any]:
         """Return parameter structure for grid interpolation"""
@@ -87,6 +76,12 @@ class GridInterpolator(ScriptInterface):
                     'value': 1.8,
                     'type': 'float',
                     'description': 'Successive over-relaxation factor (1.0-2.0)'
+                },
+                'constraint_mode': {
+                    'value': 'soft',
+                    'type': 'choice',
+                    'choices': ['soft', 'hard'],
+                    'description': 'Constraint mode: soft (eliminates flight line artifacts) or hard (traditional)'
                 }
             },
             'boundary_parameters': {
@@ -267,9 +262,9 @@ class GridInterpolator(ScriptInterface):
         
         return max_change
     
-    def create_boundary_mask(self, x, y, grid_x, grid_y, method='convex_hull', buffer_distance=None):
+    def create_boundary_mask_with_buffer(self, x, y, grid_x, grid_y, method='convex_hull', buffer_distance=None):
         """
-        Create a boundary mask to prevent interpolation outside data coverage.
+        Create a boundary mask with optional buffer - wraps the base class method
         
         Args:
             x, y: Data point coordinates
@@ -280,66 +275,39 @@ class GridInterpolator(ScriptInterface):
         Returns:
             mask: Boolean array where True indicates points inside the data boundary
         """
-        if not SCIPY_AVAILABLE:
-            # Return all True mask if scipy is not available
-            return np.ones(grid_x.shape, dtype=bool)
+        # Use the base processor method for core functionality
+        mask = self._base_processor.create_boundary_mask(x, y, grid_x, grid_y, method)
         
-        try:
-            # Get data points as array
-            data_points = np.column_stack([x, y])
-            
-            # Get grid points as array
-            grid_points = np.column_stack([grid_x.ravel(), grid_y.ravel()])
-            
-            if method == 'convex_hull':
-                # Create convex hull
-                hull = ConvexHull(data_points)
+        # Add buffer functionality if specified
+        if buffer_distance and buffer_distance > 0:
+            try:
+                from scipy.spatial.distance import cdist
+                # Get data points as array
+                data_points = np.column_stack([x, y])
+                # Get grid points as array
+                grid_points = np.column_stack([grid_x.ravel(), grid_y.ravel()])
                 
-                # Check which grid points are inside the convex hull
-                hull_path = MplPath(data_points[hull.vertices])
-                mask_1d = hull_path.contains_points(grid_points)
-                
-            elif method == 'alpha_shape':
-                # Simple distance-based approach as alpha shape approximation
-                # For each grid point, check if it's within reasonable distance of data
-                distances = cdist(grid_points, data_points)
-                min_distances = np.min(distances, axis=1)
-                
-                # Use median nearest neighbor distance as threshold
-                nn_distances = []
-                for i in range(len(data_points)):
-                    dists = cdist([data_points[i]], data_points)[0]
-                    dists = dists[dists > 0]  # Remove self-distance
-                    if len(dists) > 0:
-                        nn_distances.append(np.min(dists))
-                
-                threshold = np.median(nn_distances) * 2.0 if nn_distances else 0.01
-                mask_1d = min_distances <= threshold
-            
-            else:
-                raise ValueError(f"Unknown boundary method: {method}")
-            
-            # Apply buffer if specified
-            if buffer_distance and buffer_distance > 0:
                 # Simple buffer by expanding the mask
                 distances = cdist(grid_points, data_points)
                 min_distances = np.min(distances, axis=1)
-                mask_1d = mask_1d | (min_distances <= buffer_distance)
-            
-            # Reshape to grid shape
-            mask = mask_1d.reshape(grid_x.shape)
-            
-            return mask
-            
-        except Exception:
-            # Fallback to no masking
-            return np.ones(grid_x.shape, dtype=bool)
+                buffer_mask_1d = min_distances <= buffer_distance
+                buffer_mask = buffer_mask_1d.reshape(grid_x.shape)
+                
+                # Combine with original mask
+                mask = mask | buffer_mask
+            except ImportError:
+                # If scipy not available, just return original mask
+                pass
+        
+        return mask
     
-    def minimum_curvature_interpolation(self, x, y, z, grid_resolution=300, 
-                                        max_iterations=1000, tolerance=1e-6, 
-                                        omega=1.8, progress_callback=None):
+    def minimum_curvature_interpolation_enhanced(self, x, y, z, grid_resolution=300, 
+                                                 max_iterations=1000, tolerance=1e-6, 
+                                                 omega=1.8, constraint_mode='soft',
+                                                 progress_callback=None):
         """
-        Perform minimum curvature interpolation on irregular data points.
+        Perform minimum curvature interpolation using the enhanced base class method.
+        Supports both soft constraints (gamma style) and hard constraints (traditional style).
         
         Args:
             x, y, z: Data coordinates and values
@@ -347,127 +315,22 @@ class GridInterpolator(ScriptInterface):
             max_iterations: Maximum number of iterations
             tolerance: Convergence tolerance
             omega: Relaxation factor for successive over-relaxation
+            constraint_mode: 'soft' (eliminates flight line artifacts) or 'hard' (traditional)
             progress_callback: Optional callback for progress updates
         
         Returns:
             grid_x, grid_y, grid_z: Interpolated grid coordinates and values
         """
-        if progress_callback:
-            progress_callback(0.1, "Setting up interpolation grid...")
-        
-        # Create regular grid
-        x_min, x_max = np.min(x), np.max(x)
-        y_min, y_max = np.min(y), np.max(y)
-        
-        # Add minimal padding to grid bounds (reduce from 5% to 1%)
-        x_range = x_max - x_min
-        y_range = y_max - y_min
-        padding = 0.01  # 1% padding to reduce oversized raster
-        
-        x_min -= padding * x_range
-        x_max += padding * x_range
-        y_min -= padding * y_range
-        y_max += padding * y_range
-        
-        grid_x = np.linspace(x_min, x_max, grid_resolution)
-        grid_y = np.linspace(y_min, y_max, grid_resolution)
-        grid_X, grid_Y = np.meshgrid(grid_x, grid_y)
-        
-        # Initialize grid with linear interpolation first
-        if progress_callback:
-            progress_callback(0.18, "Creating initial grid with linear interpolation...")
-        
-        from scipy.interpolate import griddata
-        
-        # Create initial grid using linear interpolation to fill entire domain
-        grid_z_initial = griddata((x, y), z, (grid_X, grid_Y), method='linear', fill_value=np.nan)
-        
-        if progress_callback:
-            progress_callback(0.20, "Filling gaps with nearest neighbor interpolation...")
-        
-        # Fill any remaining NaN values with nearest neighbor interpolation
-        nan_mask = np.isnan(grid_z_initial)
-        if np.any(nan_mask):
-            grid_z_nearest = griddata((x, y), z, (grid_X, grid_Y), method='nearest', fill_value=np.mean(z))
-            grid_z_initial[nan_mask] = grid_z_nearest[nan_mask]
-        
-        grid_z = grid_z_initial.copy()
-        
-        if progress_callback:
-            progress_callback(0.22, "Mapping data points to grid...")
-        
-        # Create data constraint mask and values like the original script
-        ny, nx = grid_z.shape
-        dx = (x_max - x_min) / (nx - 1)
-        dy = (y_max - y_min) / (ny - 1)
-        
-        data_mask = np.zeros((ny, nx), dtype=bool)
-        data_values = np.zeros((ny, nx))
-        
-        # Map data points to grid points with improved mapping
-        for xi, yi, zi in zip(x, y, z):
-            # Find closest grid point with bounds checking
-            i = int(np.clip(round((yi - y_min) / dy), 0, ny-1))
-            j = int(np.clip(round((xi - x_min) / dx), 0, nx-1))
-            
-            # Use distance-weighted averaging if multiple data points map to same grid point
-            if data_mask[i, j]:
-                # Average with existing value
-                data_values[i, j] = (data_values[i, j] + zi) / 2
-            else:
-                data_mask[i, j] = True
-                data_values[i, j] = zi
-        
-        # Apply data constraints to the initial grid
-        grid_z[data_mask] = data_values[data_mask]
-        
-        # Value bounds for stability like original script
-        data_range = np.ptp(z)
-        data_mean = np.mean(z)
-        min_allowed = data_mean - 3 * data_range
-        max_allowed = data_mean + 3 * data_range
-        
-        if progress_callback:
-            progress_callback(0.3, "Starting minimum curvature iterations...")
-        
-        # Use stable omega value like original script
-        omega = 0.5  # Much lower omega for stability
-        
-        if progress_callback:
-            progress_callback(0.25, f"Fixed {np.sum(data_mask)} grid points to data values, starting {max_iterations} iterations...")
-        
-        # Iterative minimum curvature
-        for iteration in range(max_iterations):
-            if NUMBA_AVAILABLE:
-                max_change = self.minimum_curvature_iteration_jit(
-                    grid_z, data_mask, data_values, omega, min_allowed, max_allowed
-                )
-            else:
-                max_change = self._minimum_curvature_iteration_python(
-                    grid_z, data_mask, data_values, omega, min_allowed, max_allowed
-                )
-            
-            # Early detection of instability like original script
-            if max_change > data_range:
-                if progress_callback:
-                    progress_callback(0.8, f"Large change detected at iteration {iteration+1}, stopping early")
-                break
-            
-            # Progress update - more frequent for better feedback
-            if progress_callback and iteration % 25 == 0:
-                progress = 0.25 + 0.55 * (iteration / max_iterations)  # Reserve 0.25-0.80 for iterations
-                progress_callback(progress, f"Iteration {iteration+1}/{max_iterations}, max change: {max_change:.2e}")
-            
-            # Check for convergence
-            if max_change < tolerance:
-                if progress_callback:
-                    progress_callback(0.8, f"Converged after {iteration+1} iterations")
-                break
-        
-        if progress_callback:
-            progress_callback(0.82, "Minimum curvature interpolation complete")
-        
-        return grid_X, grid_Y, grid_z
+        # Use the base processor method with specified constraint mode
+        return self._base_processor.minimum_curvature_interpolation(
+            x, y, z, 
+            grid_resolution=grid_resolution,
+            max_iterations=max_iterations,
+            tolerance=tolerance,
+            omega=omega,
+            constraint_mode=constraint_mode,
+            progress_callback=progress_callback
+        )
     
     def _minimum_curvature_iteration_python(self, grid_z, data_mask, data_values, omega, min_allowed, max_allowed):
         """Python fallback using vectorized operations like the original script"""
@@ -1041,6 +904,7 @@ Processing Information:
             max_iterations = interp_params.get('max_iterations', {}).get('value', 1000)
             tolerance = interp_params.get('tolerance', {}).get('value', 1e-6)
             omega = interp_params.get('relaxation_factor', {}).get('value', 1.8)
+            constraint_mode = interp_params.get('constraint_mode', {}).get('value', 'soft')
             
             enable_masking = boundary_params.get('enable_boundary_masking', {}).get('value', True)
             boundary_method = boundary_params.get('boundary_method', {}).get('value', 'convex_hull')
@@ -1083,12 +947,12 @@ Processing Information:
             if progress_callback:
                 progress_callback(0.14, f"Data cleaned: {len(x)} valid points remaining")
             
-            # Perform minimum curvature interpolation
+            # Perform minimum curvature interpolation using enhanced base class method
             if progress_callback:
-                progress_callback(0.16, f"Starting minimum curvature interpolation ({grid_resolution}×{grid_resolution} grid)...")
+                progress_callback(0.16, f"Starting minimum curvature interpolation ({grid_resolution}×{grid_resolution} grid, {constraint_mode} constraints)...")
             
-            grid_X, grid_Y, grid_z = self.minimum_curvature_interpolation(
-                x, y, z, grid_resolution, max_iterations, tolerance, omega, progress_callback
+            grid_X, grid_Y, grid_z = self.minimum_curvature_interpolation_enhanced(
+                x, y, z, grid_resolution, max_iterations, tolerance, omega, constraint_mode, progress_callback
             )
             
             # Apply boundary masking if enabled
@@ -1096,7 +960,7 @@ Processing Information:
                 if progress_callback:
                     progress_callback(0.85, f"Applying boundary masking ({boundary_method})...")
                 
-                mask = self.create_boundary_mask(x, y, grid_X, grid_Y, boundary_method, buffer_distance)
+                mask = self.create_boundary_mask_with_buffer(x, y, grid_X, grid_Y, boundary_method, buffer_distance)
                 grid_z = np.where(mask, grid_z, np.nan)
                 
                 if progress_callback:
@@ -1302,6 +1166,7 @@ Processing Information:
             result.metadata.update({
                 'processor': 'magnetic',
                 'processing_method': 'minimum_curvature',
+                'constraint_mode': constraint_mode,
                 'grid_resolution': grid_resolution,
                 'iterations_used': 'converged' if max_iterations > 100 else str(max_iterations),
                 'field_processed': field_column,
