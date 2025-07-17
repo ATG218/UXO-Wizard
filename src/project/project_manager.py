@@ -172,7 +172,7 @@ class ProjectManager(QObject):
                     tab_state = DataViewerTabState(
                         file_path=widget.current_file,
                         tab_title=tab_title,
-                        current_column_filter=widget.column_combo.currentText() if hasattr(widget, 'column_combo') else "All columns",
+                        current_column_filter=widget.column_selector.get_selected_columns() if hasattr(widget, 'column_selector') else [],
                         search_text=widget.search_edit.text() if hasattr(widget, 'search_edit') else ""
                     )
                     open_tabs.append(tab_state)
@@ -223,7 +223,16 @@ class ProjectManager(QObject):
                         tab = self._data_viewer.add_file_tab(tab_state.file_path)
                         
                         # Restore tab state
-                        if hasattr(tab, 'column_combo') and tab_state.current_column_filter:
+                        if hasattr(tab, 'column_selector') and tab_state.current_column_filter:
+                            if isinstance(tab_state.current_column_filter, list):
+                                # New format: list of column names
+                                tab.column_selector.set_selected_columns(tab_state.current_column_filter)
+                            else:
+                                # Legacy format: single column name
+                                if tab_state.current_column_filter != "All columns":
+                                    tab.column_selector.set_selected_columns([tab_state.current_column_filter])
+                        elif hasattr(tab, 'column_combo') and tab_state.current_column_filter:
+                            # Fallback for legacy tabs
                             combo = tab.column_combo
                             index = combo.findText(tab_state.current_column_filter)
                             if index >= 0:

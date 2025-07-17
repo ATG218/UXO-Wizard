@@ -5,7 +5,7 @@ Project Schema - Data structures for .uxo project files
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 import json
 
 from ..ui.map.layer_types import UXOLayer, LayerType, GeometryType, LayerStyle
@@ -43,7 +43,7 @@ class DataViewerTabState:
     """State of an individual data viewer tab"""
     file_path: str
     tab_title: str
-    current_column_filter: str = "All columns"
+    current_column_filter: Union[str, List[str]] = "All columns"  # Support both old and new format
     search_text: str = ""
     selected_rows: List[int] = field(default_factory=list)
     
