@@ -3,8 +3,8 @@ Main Map Widget for UXO Wizard - pyqtlet2 based implementation
 
 Features:
 - Real-time layer management without HTML reloads
-- Primary: Kartverket (Norwegian Mapping Authority) topographic maps
-- Backup: OpenStreetMap and Satellite imagery
+- Multiple base layers: Norwegian topographic maps (Kartverket) and satellite imagery
+- Dynamic switching between base layer types
 - Dynamic layer styling and visibility control
 - Interactive tools with bidirectional data communication
 """
@@ -49,6 +49,7 @@ class UXOMapWidget(QWidget):
         self._layer_cache: Dict[str, L.layerGroup] = {}  # Cache for hidden layers
         self._map_created = False
         self.current_draw_layer = None
+        self.current_base_layer = None  # Track current base layer
         
         self.setup_ui()
         self.connect_signals()
@@ -80,6 +81,24 @@ class UXOMapWidget(QWidget):
         self.fullscreen_btn.setCheckable(True)
         self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
         toolbar.addWidget(self.fullscreen_btn)
+        
+        toolbar.addSeparator()
+        
+        # Base layer controls
+        self.topo_btn = QToolButton()
+        self.topo_btn.setText("🗺️")
+        self.topo_btn.setToolTip("Topographic Map")
+        self.topo_btn.setCheckable(True)
+        self.topo_btn.setChecked(True)  # Default to topographic
+        self.topo_btn.clicked.connect(self.switch_to_topographic)
+        toolbar.addWidget(self.topo_btn)
+        
+        self.satellite_btn = QToolButton()
+        self.satellite_btn.setText("🛰️")
+        self.satellite_btn.setToolTip("Satellite Imagery")
+        self.satellite_btn.setCheckable(True)
+        self.satellite_btn.clicked.connect(self.switch_to_satellite)
+        toolbar.addWidget(self.satellite_btn)
         
         toolbar.addSeparator()
         
@@ -155,12 +174,12 @@ class UXOMapWidget(QWidget):
         self.map_ready.emit()
         
     def _add_base_layers(self):
-        """Add base map layers - simplified for debugging"""
-        logger.debug("Adding base map layers (OpenStreetMap only)")
+        """Add base map layers - topographic and satellite"""
+        logger.debug("Adding base map layers (topographic and satellite)")
         
         try:
-            # Simple OpenStreetMap layer for debugging
-            osm = L.tileLayer(
+            # Norwegian topographic layer (Kartverket)
+            self.base_topo = L.tileLayer(
                 'https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png',
                 {
                     'attribution': '© Kartverket',
@@ -168,12 +187,75 @@ class UXOMapWidget(QWidget):
                     'tileSize': 256
                 }
             )
-            osm.addTo(self.map)
-            self.base_osm = osm
-            logger.debug("OpenStreetMap layer added successfully")
+            
+            # Satellite imagery layer (using Esri World Imagery)
+            self.base_satellite = L.tileLayer(
+                'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                {
+                    'attribution': '© Esri, Maxar, Earthstar Geographics, USDA FSA, USGS, Aerogrid, IGN, IGP, and the GIS User Community',
+                    'maxZoom': 18,
+                    'tileSize': 256
+                }
+            )
+            
+            # Add default layer (topographic) to map
+            self.base_topo.addTo(self.map)
+            self.current_base_layer = 'topographic'
+            
+            logger.debug("Topographic and satellite base layers created successfully")
             
         except Exception as e:
-            logger.error(f"Failed to add OpenStreetMap layer: {e}")
+            logger.error(f"Failed to add base layers: {e}")
+    
+    def switch_to_topographic(self):
+        """Switch to topographic base layer"""
+        try:
+            if self.current_base_layer != 'topographic':
+                # Remove current layer
+                if hasattr(self, 'base_satellite') and self.map.hasLayer(self.base_satellite):
+                    self.map.removeLayer(self.base_satellite)
+                elif hasattr(self, 'base_topo') and self.map.hasLayer(self.base_topo):
+                    self.map.removeLayer(self.base_topo)
+                
+                # Add topographic layer
+                if hasattr(self, 'base_topo'):
+                    self.base_topo.addTo(self.map)
+                    self.current_base_layer = 'topographic'
+                    
+                    # Update button states
+                    self.topo_btn.setChecked(True)
+                    self.satellite_btn.setChecked(False)
+                    
+                    logger.info("Switched to topographic base layer")
+                else:
+                    logger.error("Topographic layer not available")
+        except Exception as e:
+            logger.error(f"Failed to switch to topographic layer: {e}")
+    
+    def switch_to_satellite(self):
+        """Switch to satellite base layer"""
+        try:
+            if self.current_base_layer != 'satellite':
+                # Remove current layer
+                if hasattr(self, 'base_topo') and self.map.hasLayer(self.base_topo):
+                    self.map.removeLayer(self.base_topo)
+                elif hasattr(self, 'base_satellite') and self.map.hasLayer(self.base_satellite):
+                    self.map.removeLayer(self.base_satellite)
+                
+                # Add satellite layer
+                if hasattr(self, 'base_satellite'):
+                    self.base_satellite.addTo(self.map)
+                    self.current_base_layer = 'satellite'
+                    
+                    # Update button states
+                    self.satellite_btn.setChecked(True)
+                    self.topo_btn.setChecked(False)
+                    
+                    logger.info("Switched to satellite base layer")
+                else:
+                    logger.error("Satellite layer not available")
+        except Exception as e:
+            logger.error(f"Failed to switch to satellite layer: {e}")
             
     def _add_map_controls(self):
         """Add map controls"""
