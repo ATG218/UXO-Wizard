@@ -20,6 +20,7 @@ class LayerManager(QObject):
     layer_selected = Signal(str)  # layer_name
     layer_order_changed = Signal(list)  # ordered layer names
     layer_bounds_changed = Signal(list)  # [min_x, min_y, max_x, max_y]
+    layer_display_name_changed = Signal(str, str) # layer_name, new_display_name
     
     def __init__(self):
         super().__init__()
@@ -194,6 +195,18 @@ class LayerManager(QObject):
         logger.debug(f"Reordered {len(layer_names)} layers")
         return True
         
+    def rename_layer(self, layer_name: str, new_display_name: str) -> bool:
+        """Rename the display name of a layer."""
+        if layer_name not in self.layers:
+            logger.warning(f"Layer '{layer_name}' not found for renaming.")
+            return False
+        
+        layer = self.layers[layer_name]
+        layer.display_name = new_display_name
+        self.layer_display_name_changed.emit(layer_name, new_display_name)
+        logger.info(f"Renamed layer '{layer_name}' to '{new_display_name}'.")
+        return True
+
     def get_global_bounds(self) -> Optional[List[float]]:
         """Get bounds encompassing all layers"""
         if not self.layers:

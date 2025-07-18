@@ -37,28 +37,29 @@ class ProcessingPipeline(QObject):
         # Try to create each processor and catch any import errors
         try:
             logger.debug("Creating MagneticProcessor...")
-            self.processors['magnetic'] = MagneticProcessor()
+            print(f"DEBUG: Creating MagneticProcessor with project_manager: {project_manager}")
+            self.processors['magnetic'] = MagneticProcessor(project_manager=project_manager)
             logger.debug("MagneticProcessor created successfully")
         except Exception as e:
             logger.error(f"Failed to create MagneticProcessor: {e}")
             
         try:
             logger.debug("Creating GPRProcessor...")
-            self.processors['gpr'] = GPRProcessor()
+            self.processors['gpr'] = GPRProcessor(project_manager=project_manager)
             logger.debug("GPRProcessor created successfully")
         except Exception as e:
             logger.error(f"Failed to create GPRProcessor: {e}")
             
         try:
             logger.debug("Creating GammaProcessor...")
-            self.processors['gamma'] = GammaProcessor()
+            self.processors['gamma'] = GammaProcessor(project_manager=project_manager)
             logger.debug("GammaProcessor created successfully")
         except Exception as e:
             logger.error(f"Failed to create GammaProcessor: {e}")
             
         try:
             logger.debug("Creating MultispectralProcessor...")
-            self.processors['multispectral'] = MultispectralProcessor()
+            self.processors['multispectral'] = MultispectralProcessor(project_manager=project_manager)
             logger.debug("MultispectralProcessor created successfully")
         except Exception as e:
             logger.error(f"Failed to create MultispectralProcessor: {e}")

@@ -32,6 +32,9 @@ from scipy.interpolate import griddata
 
 
 class MagneticAnomalyProcessor(ScriptInterface):
+    def __init__(self, project_manager=None):
+        super().__init__(project_manager)
+    
     @property
     def name(self) -> str: return "Magnetic Anomaly Processor"
     @property
@@ -69,9 +72,21 @@ class MagneticAnomalyProcessor(ScriptInterface):
         
         return True
 
-    def _create_output_directory(self, input_file_path: Optional[str]) -> Path:
+    def _create_output_directory(self, input_file_path: Optional[str], working_directory: Optional[str] = None) -> Path:
         """Create output directory in project/processed/magnetic/ following framework structure"""
-        if input_file_path:
+        
+        print(f"DEBUG: _create_output_directory called with:")
+        print(f"  input_file_path: {input_file_path}")
+        print(f"  working_directory: {working_directory}")
+        
+        # Always prefer working directory if provided
+        if working_directory and working_directory.strip():
+            project_dir = Path(working_directory)
+            base_filename = Path(input_file_path).stem if input_file_path else "anomaly_analysis"
+            output_dir = project_dir / "processed" / "magnetic" / f"{base_filename}_analysis_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            print(f"DEBUG: Using working directory - final output_dir: {output_dir}")
+        elif input_file_path:
+            # Fallback method: try to find project root from input file path
             input_path = Path(input_file_path)
             base_filename = input_path.stem
             
@@ -85,7 +100,7 @@ class MagneticAnomalyProcessor(ScriptInterface):
             # Create project/processed/magnetic/filename_analysis_timestamp structure
             output_dir = project_dir / "processed" / "magnetic" / f"{base_filename}_analysis_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
         else:
-            # Fallback to temporary directory
+            # Last resort: temporary directory
             temp_dir = tempfile.mkdtemp(prefix="anomaly_analysis_")
             output_dir = Path(temp_dir)
         
@@ -270,6 +285,10 @@ class MagneticAnomalyProcessor(ScriptInterface):
         try:
             if progress_callback: progress_callback(0, "Initializing...")
             
+            # Set up traceability metadata
+            input_files = [input_file_path] if input_file_path else []
+            self.set_current_files(input_files)
+            
             analysis_type = params.get('analysis_options', {}).get('analysis_type', {}).get('value', 'all_methods')
             grid_value_col = params.get('input_data', {}).get('grid_value_column', {}).get('value', 'value')
             va_col = params.get('input_data', {}).get('vertical_gradient_column', {}).get('value', 'none')
@@ -346,7 +365,7 @@ class MagneticAnomalyProcessor(ScriptInterface):
             
             self._add_layer_outputs(processing_result, all_results, grid_X, grid_Y, input_file_path, coord_type)
 
-            output_dir = self._create_output_directory(input_file_path)
+            output_dir = self._create_output_directory(input_file_path, self.get_project_working_directory())
             if gen_plots:
                 if progress_callback: progress_callback(0.85, "Saving plots...")
                 viz_files = self._create_visualizations(output_dir, all_results, grid_X, grid_Y, si)

@@ -13,8 +13,8 @@ from .base import BaseProcessor, ProcessingResult, ProcessingError
 class MagneticProcessor(BaseProcessor):
     """Processor for magnetic survey data with script framework support"""
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, project_manager=None):
+        super().__init__(project_manager=project_manager)
         self.name = "Magnetic Processor"
         self.description = "Process magnetic field data using various processing scripts"
         self.required_columns = []  # Will be detected automatically

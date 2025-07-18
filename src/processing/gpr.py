@@ -15,8 +15,8 @@ from .base import BaseProcessor, ProcessingResult, ProcessingError
 class GPRProcessor(BaseProcessor):
     """Processor for Ground Penetrating Radar data"""
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, project_manager=None):
+        super().__init__(project_manager=project_manager)
         self.name = "GPR Processor"
         self.description = "Process GPR data for subsurface anomaly detection"
         

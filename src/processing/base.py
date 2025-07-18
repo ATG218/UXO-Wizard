@@ -124,6 +124,10 @@ class ProcessingResult:
 class ScriptInterface(ABC):
     """Abstract interface that all processing scripts must implement"""
     
+    def __init__(self, project_manager=None):
+        """Initialize script with optional project manager reference"""
+        self.project_manager = project_manager
+    
     @property
     @abstractmethod
     def name(self) -> str:
@@ -195,6 +199,15 @@ class ScriptInterface(ABC):
         if data.empty:
             raise ProcessingError("No data provided")
         return True
+    
+    def get_project_working_directory(self) -> Optional[str]:
+        """Get the current project working directory"""
+        if self.project_manager:
+            working_dir = self.project_manager.get_current_working_directory()
+            print(f"DEBUG: ScriptInterface.get_project_working_directory() returning: {working_dir}")
+            return working_dir
+        print(f"DEBUG: ScriptInterface.get_project_working_directory() - no project_manager")
+        return None
 
 
 class ProcessingWorker(QThread):
@@ -268,6 +281,12 @@ class ProcessingWorker(QThread):
     def _convert_layer_output_to_uxo_layer(self, layer_output: LayerOutput, result: ProcessingResult) -> Optional['UXOLayer']:
         """Convert LayerOutput to UXOLayer using processor's layer creation methods"""
         try:
+            # Update processor's output files for traceability
+            if result.output_files:
+                output_file_paths = [of.file_path for of in result.output_files]
+                current_input_files = getattr(self.processor_instance, '_current_input_files', [])
+                self.processor_instance.set_current_files(current_input_files, output_file_paths)
+            
             # Use layer_name from metadata if provided, otherwise auto-generate
             if layer_output.metadata and 'layer_name' in layer_output.metadata:
                 name = layer_output.metadata['layer_name']
@@ -326,11 +345,12 @@ class ProcessingWorker(QThread):
 class BaseProcessor(ABC):
     """Abstract base class for all data processors with script framework support"""
     
-    def __init__(self):
+    def __init__(self, project_manager=None):
         self.name = "Base Processor"
         self.description = "Base processor class"
         self.supported_columns = []
         self.required_columns = []
+        self.project_manager = project_manager
         
         # Script framework attributes
         self.processor_type = self._get_processor_type()
@@ -385,7 +405,22 @@ class BaseProcessor(ABC):
                         
                         # Look for SCRIPT_CLASS attribute
                         if hasattr(module, 'SCRIPT_CLASS'):
-                            script_instance = module.SCRIPT_CLASS()
+                            try:
+                                # Try to create script instance with project_manager parameter
+                                print(f"DEBUG: Creating script {script_name} with project_manager: {self.project_manager}")
+                                script_instance = module.SCRIPT_CLASS(project_manager=self.project_manager)
+                                print(f"DEBUG: Script {script_name} created successfully with project_manager")
+                            except TypeError:
+                                # Fallback for older scripts that don't accept project_manager
+                                print(f"DEBUG: Script {script_name} doesn't accept project_manager, using fallback")
+                                script_instance = module.SCRIPT_CLASS()
+                                # Manually set project_manager if the instance has this attribute
+                                if hasattr(script_instance, 'project_manager'):
+                                    script_instance.project_manager = self.project_manager
+                                    print(f"DEBUG: Manually set project_manager for script {script_name}")
+                                else:
+                                    print(f"DEBUG: Script {script_name} has no project_manager attribute")
+                            
                             if isinstance(script_instance, ScriptInterface):
                                 scripts[script_name] = script_instance
                                 logger.debug(f"Loaded script: {script_name} for {self.processor_type}")
@@ -655,7 +690,7 @@ class BaseProcessor(ABC):
         if metadata:
             layer_metadata.update(metadata)
         
-        # Create UXOLayer
+        # Create UXOLayer with traceability
         return UXOLayer(
             name=name,
             layer_type=uxo_layer_type,
@@ -665,7 +700,12 @@ class BaseProcessor(ABC):
             metadata=layer_metadata,
             source=LayerSource.PROCESSING,
             bounds=bounds,
-            processing_history=[self.processor_type]
+            processing_history=[self.processor_type],
+            # Add traceability fields
+            processing_run_id=self._generate_run_id(),
+            source_script=self._get_current_script_path(),
+            source_input_files=getattr(self, '_current_input_files', []),
+            generated_output_files=getattr(self, '_current_output_files', [])
         )
     
     def create_point_layer(self, data: pd.DataFrame, name: str = None, 
@@ -826,6 +866,38 @@ class BaseProcessor(ABC):
                     setattr(style, key, value)
         
         return style
+    
+    def _generate_run_id(self) -> str:
+        """Generate a unique run ID for this processing session"""
+        if not hasattr(self, '_current_run_id'):
+            from datetime import datetime
+            self._current_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return self._current_run_id
+    
+    def _get_current_script_path(self) -> Optional[str]:
+        """Get the path of the current script being executed"""
+        if hasattr(self, 'current_script') and self.current_script:
+            script_instance = self.available_scripts.get(self.current_script)
+            if script_instance:
+                # Try to get the script file path
+                import inspect
+                try:
+                    return inspect.getfile(script_instance.__class__)
+                except:
+                    pass
+        return None
+    
+    def set_current_files(self, input_files: List[str], output_files: List[str] = None):
+        """Set the current input and output files for traceability"""
+        self._current_input_files = input_files if input_files else []
+        self._current_output_files = output_files if output_files else []
+    
+    def get_project_working_directory(self) -> Optional[str]:
+        """Get the current project working directory"""
+        if self.project_manager:
+            working_dir = self.project_manager.get_current_working_directory()
+            return working_dir
+        return None
     
     def _create_magnetic_style(self, data: Any, layer_type: str) -> LayerStyle:
         """Create magnetic-specific styling"""

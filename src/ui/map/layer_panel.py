@@ -20,12 +20,421 @@ from .layer_manager import LayerManager
 from .layer_types import UXOLayer, LayerStyle, LayerType
 
 
+class LayerNameParser:
+    """Utility to parse human-readable names from layer metadata."""
+    @staticmethod
+    def parse(layer: UXOLayer) -> str:
+        """Generates a clean, descriptive name for a layer."""
+        # First try to use metadata for more intelligent naming
+        if hasattr(layer, 'metadata') and layer.metadata:
+            data_type = layer.metadata.get('data_type', '').lower()
+            if data_type:
+                # Use data type for naming
+                if 'anomaly' in data_type or 'anomalies' in data_type:
+                    return "Anomalies"
+                elif 'grid' in data_type or 'interpolated' in data_type:
+                    return "Interpolated Grid"
+                elif 'contour' in data_type:
+                    return "Contours"
+                elif 'flight' in data_type or 'path' in data_type:
+                    return "Flight Path"
+                elif 'segment' in data_type:
+                    return "Segments"
+                elif 'processed' in data_type:
+                    return "Processed Data"
+        
+        # Try to infer from source script
+        if layer.source_script:
+            script_name = os.path.basename(layer.source_script).lower()
+            if "magbase" in script_name:
+                return "Magbase Data"
+            elif "grid_interpolator" in script_name:
+                return "Interpolated Grid"
+            elif "anomaly" in script_name:
+                return "Anomalies"
+            elif "flight_path_segmenter" in script_name:
+                return "Flight Segments"
+            elif "basic_processing" in script_name:
+                return "Basic Processing"
+        
+        # Try to infer from layer name patterns
+        name_lower = layer.name.lower()
+        if any(word in name_lower for word in ['anomaly', 'anomalies']):
+            return "Anomalies"
+        elif any(word in name_lower for word in ['grid', 'interpolated', 'interp']):
+            return "Interpolated Grid"
+        elif any(word in name_lower for word in ['contour', 'contours']):
+            return "Contours"
+        elif any(word in name_lower for word in ['flight', 'path', 'segment']):
+            return "Flight Data"
+        elif any(word in name_lower for word in ['processed', 'proc']):
+            return "Processed Data"
+        elif any(word in name_lower for word in ['magbase', 'magnetic']):
+            return "Magnetic Data"
+        
+        # Fallback to a cleaned-up version of the original name
+        name = layer.name.replace("_", " ").replace(".csv", "").title()
+        
+        # Remove common timestamp patterns
+        import re
+        # Remove patterns like "20240115 143000" or "20240115_143000"
+        name = re.sub(r'\d{8}[\s_]\d{6}', '', name)
+        # Remove patterns like "20240115143000"
+        name = re.sub(r'\d{14}', '', name)
+        # Remove "Output" suffix if present
+        name = re.sub(r'\bOutput\b', '', name, flags=re.IGNORECASE)
+        
+        # Clean up extra spaces
+        name = ' '.join(name.split())
+        
+        return name if name else "Layer Data"
+
+class ScriptGroupWidget(QFrame):
+    """A widget to represent a collapsible group of layers from a specific script."""
+    def __init__(self, script_name: str, parent=None):
+        super().__init__(parent)
+        self.script_name = script_name
+        self.is_expanded = True
+        self.run_subgroups: List['SubgroupItemWidget'] = []
+        self.layer_widgets: List['LayerItemWidget'] = []
+
+        self.setFrameShape(QFrame.NoFrame)
+        self.setObjectName("scriptGroupItem")
+        self.setStyleSheet("""
+            #scriptGroupItem {
+                background-color: #2c3e50;
+                border-top: 1px solid #34495e;
+                margin-left: 5px;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.header_widget = QWidget()
+        self.header_widget.setObjectName("scriptGroupHeader")
+        self.header_widget.setStyleSheet("""
+            #scriptGroupHeader { background-color: #3498db; }
+            #scriptGroupHeader:hover { background-color: #2980b9; }
+        """)
+        self.header_widget.mousePressEvent = self._toggle_expansion
+        
+        # Add context menu support
+        self.header_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.header_widget.customContextMenuRequested.connect(self._show_script_group_context_menu)
+
+        header_layout = QHBoxLayout(self.header_widget)
+        header_layout.setContentsMargins(8, 5, 8, 5)
+        header_layout.setSpacing(6)
+
+        self.arrow_label = QLabel()
+        self.arrow_label.setFixedWidth(10)
+
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(9)  # Smaller font size
+        self.title_label = QLabel(self._format_script_name(script_name))
+        self.title_label.setFont(title_font)
+        self.title_label.setStyleSheet("color: white;")
+        
+        self.item_count_label = QLabel("")
+        self.item_count_label.setStyleSheet("color: #ecf0f1;")
+
+        header_layout.addWidget(self.arrow_label)
+        header_layout.addWidget(self.title_label)
+        header_layout.addStretch()
+        header_layout.addWidget(self.item_count_label)
+
+        self.container = QWidget()
+        self.container_layout = QVBoxLayout(self.container)
+        self.container_layout.setContentsMargins(0, 0, 0, 0)
+        self.container_layout.setSpacing(1)
+
+        layout.addWidget(self.header_widget)
+        layout.addWidget(self.container)
+
+        self._update_arrow()
+        self._update_item_count()
+
+    def _format_script_name(self, script_name: str) -> str:
+        """Format script name for display"""
+        if not script_name or script_name == "Unknown Script":
+            return "Unknown Script"
+        
+        # Extract just the filename without extension
+        base_name = os.path.basename(script_name)
+        if base_name.endswith('.py'):
+            base_name = base_name[:-3]
+        
+        # Convert snake_case to Title Case
+        formatted = base_name.replace('_', ' ').title()
+        
+        # Special cases for common script names
+        replacements = {
+            'Magbase Processing': 'Magbase Processing',
+            'Anomaly Detector': 'Anomaly Detection',
+            'Flight Path Segmenter': 'Flight Path Segmentation',
+            'Grid Interpolator': 'Grid Interpolation',
+            'Basic Processing': 'Basic Processing'
+        }
+        
+        return replacements.get(formatted, formatted)
+    
+    def _show_script_group_context_menu(self, position):
+        """Show context menu for script group"""
+        menu = QMenu()
+        
+        # Remove script group action
+        remove_action = menu.addAction("Remove Script Group")
+        remove_action.triggered.connect(self._remove_script_group)
+        
+        # Show the menu
+        menu.exec(self.header_widget.mapToGlobal(position))
+    
+    def _remove_script_group(self):
+        """Remove this script group and all its layers"""
+        # Emit a signal to the parent to handle removal
+        parent = self.parent()
+        while parent and not hasattr(parent, 'remove_script_group'):
+            parent = parent.parent()
+        
+        if parent and hasattr(parent, 'remove_script_group'):
+            parent.remove_script_group(self)
+
+    def _toggle_expansion(self, event=None):
+        self.is_expanded = not self.is_expanded
+        self.container.setVisible(self.is_expanded)
+        self._update_arrow()
+
+    def _update_arrow(self):
+        self.arrow_label.setText("▼" if self.is_expanded else "►")
+        self.arrow_label.setStyleSheet("color: white;")
+        
+    def _update_item_count(self):
+        run_count = len(self.run_subgroups)
+        layer_count = len(self.layer_widgets)
+        total_layers = layer_count + sum(len(run.layer_widgets) for run in self.run_subgroups)
+        
+        if run_count > 0:
+            self.item_count_label.setText(f"({run_count} runs, {total_layers} layers)")
+        else:
+            self.item_count_label.setText(f"({total_layers} layers)")
+
+    def add_run_subgroup(self, widget: 'SubgroupItemWidget'):
+        self.run_subgroups.append(widget)
+        self.container_layout.addWidget(widget)
+        self._update_item_count()
+        self._update_parent_counts()
+
+    def add_layer_item(self, widget: 'LayerItemWidget'):
+        """Add layer directly to script group (for layers without run_id)"""
+        self.layer_widgets.append(widget)
+        self.container_layout.addWidget(widget)
+        self._update_item_count()
+        self._update_parent_counts()
+
+    def remove_run_subgroup(self, widget: 'SubgroupItemWidget'):
+        if widget in self.run_subgroups:
+            self.run_subgroups.remove(widget)
+            self.container_layout.removeWidget(widget)
+            widget.setParent(None)
+            self._update_item_count()
+            self._update_parent_counts()
+
+    def remove_layer_item(self, widget: 'LayerItemWidget'):
+        if widget in self.layer_widgets:
+            self.layer_widgets.remove(widget)
+            self.container_layout.removeWidget(widget)
+            widget.setParent(None)
+            self._update_item_count()
+            self._update_parent_counts()
+    
+    def _update_parent_counts(self):
+        """Update parent group counts"""
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, '_update_item_count'):
+                parent._update_item_count()
+                break
+            parent = parent.parent()
+
+
+class SubgroupItemWidget(QFrame):
+    """A widget to represent a collapsible subgroup of layers from a single processing run."""
+    def __init__(self, run_id: str, script_name: str, parent=None):
+        super().__init__(parent)
+        self.run_id = run_id
+        self.script_name = script_name
+        self.is_expanded = True
+        self.layer_widgets: List['LayerItemWidget'] = []
+
+        self.setFrameShape(QFrame.NoFrame)
+        self.setObjectName("subgroupItem")
+        self.setStyleSheet("""
+            #subgroupItem {
+                background-color: #34495e;
+                border-top: 1px solid #2c3e50;
+                margin-left: 15px;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.header_widget = QWidget()
+        self.header_widget.setObjectName("subgroupHeader")
+        self.header_widget.setStyleSheet("""
+            #subgroupHeader { background-color: #2c3e50; }
+            #subgroupHeader:hover { background-color: #34495e; }
+        """)
+        self.header_widget.mousePressEvent = self._toggle_expansion
+        self.header_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.header_widget.customContextMenuRequested.connect(self._show_context_menu)
+
+        header_layout = QHBoxLayout(self.header_widget)
+        header_layout.setContentsMargins(8, 4, 8, 4)
+        header_layout.setSpacing(6)
+
+        self.arrow_label = QLabel()
+        self.arrow_label.setFixedWidth(10)
+
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(8)  # Smaller font size
+        # Format run_id for display - show timestamp more clearly
+        display_run_id = self._format_run_id(run_id)
+        self.title_label = QLabel(f"Run: {display_run_id}")
+        self.title_label.setFont(title_font)
+        
+        self.item_count_label = QLabel("")
+        self.item_count_label.setStyleSheet("color: #bdc3c7;")
+
+        header_layout.addWidget(self.arrow_label)
+        header_layout.addWidget(self.title_label)
+        header_layout.addStretch()
+        header_layout.addWidget(self.item_count_label)
+
+        self.layer_container = QWidget()
+        self.layer_container_layout = QVBoxLayout(self.layer_container)
+        self.layer_container_layout.setContentsMargins(5, 0, 0, 0)
+        self.layer_container_layout.setSpacing(1)
+
+        layout.addWidget(self.header_widget)
+        layout.addWidget(self.layer_container)
+
+        self._update_arrow()
+        self._update_item_count()
+
+    def _format_run_id(self, run_id: str) -> str:
+        """Format run_id for better display"""
+        if not run_id:
+            return "Unknown"
+        
+        # If it looks like a timestamp (YYYYMMDD_HHMMSS), format it nicely
+        if len(run_id) == 15 and '_' in run_id:
+            date_part, time_part = run_id.split('_')
+            if len(date_part) == 8 and len(time_part) == 6:
+                try:
+                    formatted_date = f"{date_part[6:8]}/{date_part[4:6]}/{date_part[0:4]}"
+                    formatted_time = f"{time_part[0:2]}:{time_part[2:4]}:{time_part[4:6]}"
+                    return f"{formatted_date} {formatted_time}"
+                except:
+                    pass
+        
+        return run_id
+
+    def _toggle_expansion(self, event=None):
+        self.is_expanded = not self.is_expanded
+        self.layer_container.setVisible(self.is_expanded)
+        self._update_arrow()
+
+    def _update_arrow(self):
+        self.arrow_label.setText("▼" if self.is_expanded else "►")
+        
+    def _update_item_count(self):
+        count = len(self.layer_widgets)
+        self.item_count_label.setText(f"({count} layers)")
+
+    def add_layer_item(self, widget: 'LayerItemWidget'):
+        self.layer_widgets.append(widget)
+        self.layer_container_layout.addWidget(widget)
+        self._update_item_count()
+        self._update_parent_counts()
+
+    def remove_layer_item(self, widget: 'LayerItemWidget'):
+        if widget in self.layer_widgets:
+            self.layer_widgets.remove(widget)
+            self.layer_container_layout.removeWidget(widget)
+            widget.setParent(None)
+            self._update_item_count()
+            self._update_parent_counts()
+    
+    def _show_context_menu(self, position):
+        """Show context menu for the run group"""
+        menu = QMenu(self)
+        
+        # Delete this run group
+        delete_action = QAction("Delete Run Group", self)
+        delete_action.triggered.connect(self._delete_run_group)
+        menu.addAction(delete_action)
+        
+        # Show menu at the requested position
+        menu.exec(self.header_widget.mapToGlobal(position))
+    
+    def _delete_run_group(self):
+        """Delete this entire run group and all its layers"""
+        from qtpy.QtWidgets import QMessageBox
+        
+        # Confirm deletion
+        reply = QMessageBox.question(
+            self,
+            "Delete Run Group",
+            f"Are you sure you want to delete the run group '{self._format_run_id(self.run_id)}' and all its layers?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Find the layer panel to access the layer manager
+            layer_panel = self
+            while layer_panel and not hasattr(layer_panel, 'layer_manager'):
+                layer_panel = layer_panel.parent()
+            
+            if layer_panel and hasattr(layer_panel, 'layer_manager'):
+                # Remove all layers in this run group
+                layer_names_to_remove = []
+                for layer_widget in self.layer_widgets:
+                    layer_names_to_remove.append(layer_widget.layer_name)
+                
+                # Remove each layer
+                for layer_name in layer_names_to_remove:
+                    layer_panel.layer_manager.remove_layer(layer_name)
+                
+                # The widget will be automatically removed when the layers are removed
+                # and the UI is refreshed
+    
+    def _update_parent_counts(self):
+        """Update parent group counts"""
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, '_update_item_count'):
+                parent._update_item_count()
+                if hasattr(parent, '_update_parent_counts'):
+                    parent._update_parent_counts()
+                break
+            parent = parent.parent()
+
+
+
 class GroupItemWidget(QFrame):
     """A widget to represent a collapsible group of layers."""
     def __init__(self, group_name: str, parent=None):
         super().__init__(parent)
         self.group_name = group_name
         self.is_expanded = True
+        self.script_groups: List[ScriptGroupWidget] = []
         self.layer_widgets: List[LayerItemWidget] = []
 
         self.setFrameShape(QFrame.NoFrame)
@@ -53,6 +462,10 @@ class GroupItemWidget(QFrame):
             }
         """)
         self.header_widget.mousePressEvent = self._toggle_expansion
+        
+        # Add context menu support
+        self.header_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.header_widget.customContextMenuRequested.connect(self._show_group_context_menu)
 
         header_layout = QHBoxLayout(self.header_widget)
         header_layout.setContentsMargins(8, 6, 8, 6)
@@ -97,19 +510,73 @@ class GroupItemWidget(QFrame):
         self.arrow_label.setText("▼" if self.is_expanded else "►")
         
     def _update_item_count(self):
-        count = len(self.layer_widgets)
-        self.item_count_label.setText(f"({count})")
+        script_count = len(self.script_groups)
+        direct_layer_count = len(self.layer_widgets)
+        
+        # Count total layers across all script groups
+        total_layers = direct_layer_count
+        for script_group in self.script_groups:
+            total_layers += len(script_group.layer_widgets)
+            for run_subgroup in script_group.run_subgroups:
+                total_layers += len(run_subgroup.layer_widgets)
+        
+        if script_count > 0:
+            self.item_count_label.setText(f"({script_count} scripts, {total_layers} layers)")
+        else:
+            self.item_count_label.setText(f"({total_layers} layers)")
 
-    def add_layer_widget(self, widget: 'LayerItemWidget'):
+    def add_script_group(self, widget: ScriptGroupWidget):
+        self.script_groups.append(widget)
+        self.layer_container_layout.addWidget(widget)
+        self._update_item_count()
+
+    def add_layer_item(self, widget: 'LayerItemWidget'):
+        """Add layer directly to processor group (for layers without script info)"""
         self.layer_widgets.append(widget)
         self.layer_container_layout.addWidget(widget)
         self._update_item_count()
 
-    def remove_layer_widget(self, widget: 'LayerItemWidget'):
+    def remove_script_group(self, widget: ScriptGroupWidget):
+        if widget in self.script_groups:
+            self.script_groups.remove(widget)
+            self.layer_container_layout.removeWidget(widget)
+            widget.setParent(None)
+            self._update_item_count()
+
+    def remove_layer_item(self, widget: 'LayerItemWidget'):
         if widget in self.layer_widgets:
             self.layer_widgets.remove(widget)
             self.layer_container_layout.removeWidget(widget)
+            widget.setParent(None)
             self._update_item_count()
+
+    def find_script_group(self, script_name: str) -> Optional[ScriptGroupWidget]:
+        """Find existing script group by name"""
+        for script_group in self.script_groups:
+            if script_group.script_name == script_name:
+                return script_group
+        return None
+    
+    def _show_group_context_menu(self, position):
+        """Show context menu for group"""
+        menu = QMenu()
+        
+        # Remove group action
+        remove_action = menu.addAction("Remove Group")
+        remove_action.triggered.connect(self._remove_group)
+        
+        # Show the menu
+        menu.exec(self.header_widget.mapToGlobal(position))
+    
+    def _remove_group(self):
+        """Remove this group and all its layers"""
+        # Emit a signal to the parent to handle removal
+        parent = self.parent()
+        while parent and not hasattr(parent, 'remove_group'):
+            parent = parent.parent()
+        
+        if parent and hasattr(parent, 'remove_group'):
+            parent.remove_group(self)
 
 
 class LayerItemWidget(QWidget):
@@ -306,12 +773,15 @@ class ModernLayerControlPanel(QWidget):
     opacity_changed = Signal(str, float)  # layer_name, opacity
     style_edit_requested = Signal(str)  # layer_name
     zoom_to_layer = Signal(str)  # layer_name
+    view_data_file_requested = Signal(str) # file_path
     
     def __init__(self, layer_manager: LayerManager):
         super().__init__()
         self.layer_manager = layer_manager
         self.layer_widgets: Dict[str, LayerItemWidget] = {}
-        self.group_widgets: Dict[str, GroupItemWidget] = {}  # Don't pre-create
+        self.group_widgets: Dict[str, GroupItemWidget] = {}
+        self.script_group_widgets: Dict[str, ScriptGroupWidget] = {}
+        self.subgroup_widgets: Dict[str, SubgroupItemWidget] = {}
         self.current_layer = None
         
         self.setup_ui()
@@ -461,35 +931,55 @@ class ModernLayerControlPanel(QWidget):
         self.layer_manager.layer_removed.connect(self._on_layer_removed)
         self.layer_manager.layer_visibility_changed.connect(self._on_visibility_changed)
         self.layer_manager.layer_style_changed.connect(self._on_style_changed)
+        self.layer_manager.layer_display_name_changed.connect(self._on_display_name_changed)
         
     def _on_layer_added(self, layer: UXOLayer):
-        """Handle layer addition"""
+        """Handle layer addition with 3-level hierarchy: Processor → Script → Run → Layers"""
         if layer.name in self.layer_widgets:
             logger.warning(f"Layer widget for '{layer.name}' already exists. Updating.")
             return
 
-        # Determine the group for this layer
-        group_name = "Other"  # Default
-        for g, layers in self.layer_manager.layer_groups.items():
-            if layer.name in layers:
-                group_name = g
-                break
-        
-        # Get or create the group widget (but don't add to layout yet)
+        if not layer.display_name:
+            layer.display_name = LayerNameParser.parse(layer)
+
+        # Level 1: Processor Group (e.g., "Magnetic Processing")
+        group_name = self._get_group_for_layer(layer)
         group_widget = self._create_group_widget(group_name)
-            
-        # Create layer widget
+
+        # Level 2: Script Group (e.g., "Magbase Processing")
+        script_name = self._get_script_name_for_layer(layer)
+        script_group_key = f"{group_name}:{script_name}"
+        
+        if script_group_key not in self.script_group_widgets:
+            script_group_widget = ScriptGroupWidget(script_name)
+            self.script_group_widgets[script_group_key] = script_group_widget
+            group_widget.add_script_group(script_group_widget)
+        
+        script_group_widget = self.script_group_widgets[script_group_key]
+        parent_widget = script_group_widget
+
+        # Level 3: Run Subgroup (if processing_run_id exists)
+        run_id = layer.processing_run_id
+        if run_id:
+            run_subgroup_key = f"{script_group_key}:{run_id}"
+            if run_subgroup_key not in self.subgroup_widgets:
+                run_subgroup_widget = SubgroupItemWidget(run_id, script_name)
+                self.subgroup_widgets[run_subgroup_key] = run_subgroup_widget
+                script_group_widget.add_run_subgroup(run_subgroup_widget)
+            parent_widget = self.subgroup_widgets[run_subgroup_key]
+        
+        self._add_layer_item_to_parent(layer, parent_widget)
+        self._add_group_to_layout(group_widget)
+
+    def _add_layer_item_to_parent(self, layer: UXOLayer, parent_widget):
+        """Creates a layer widget and adds it to a parent (group or subgroup)."""
         layer_widget = LayerItemWidget(layer)
         layer_widget.visibility_changed.connect(self._on_layer_visibility_toggled)
         layer_widget.layer_selected.connect(self._on_layer_selected)
         layer_widget.layer_double_clicked.connect(self.zoom_to_layer.emit)
         
-        # Add to group widget and track it
-        group_widget.add_layer_widget(layer_widget)
+        parent_widget.add_layer_item(layer_widget)
         self.layer_widgets[layer.name] = layer_widget
-        
-        # Now add/show the group in the layout since it has content
-        self._add_group_to_layout(group_widget)
         
         # Context menu
         layer_widget.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -497,22 +987,99 @@ class ModernLayerControlPanel(QWidget):
             lambda pos, name=layer.name: self._show_context_menu(pos, name, layer_widget)
         )
         
-        logger.debug(f"Added layer widget for '{layer.name}' to group '{group_name}'")
+        logger.debug(f"Added layer widget for '{layer.name}' to parent '{parent_widget.objectName()}'")
+
+    def _get_group_for_layer(self, layer: UXOLayer) -> str:
+        """Determine the group name for a given layer."""
+        for g, layers in self.layer_manager.layer_groups.items():
+            if layer.name in layers:
+                return g
+        return "Other"
+    
+    def _get_script_name_for_layer(self, layer: UXOLayer) -> str:
+        """Get the script name for a layer, with intelligent fallbacks."""
+        # First try the source_script field (with backward compatibility)
+        source_script = getattr(layer, 'source_script', None)
+        if source_script:
+            return source_script
+        
+        # Try to infer from metadata
+        if hasattr(layer, 'metadata') and layer.metadata:
+            script_name = layer.metadata.get('script', '')
+            if script_name:
+                return script_name
+            
+            # Try processor type
+            processor_type = layer.metadata.get('processor', '')
+            if processor_type:
+                return f"{processor_type.title()} Processing"
+        
+        # Try to infer from layer name patterns
+        name_lower = layer.name.lower()
+        if 'magbase' in name_lower or 'magnetic' in name_lower:
+            return "Magnetic Processing"
+        elif 'anomaly' in name_lower:
+            return "Anomaly Detection"
+        elif 'grid' in name_lower or 'interpolat' in name_lower:
+            return "Grid Interpolation"
+        elif 'flight' in name_lower or 'path' in name_lower:
+            return "Flight Path Processing"
+        elif 'gpr' in name_lower:
+            return "GPR Processing"
+        elif 'gamma' in name_lower:
+            return "Gamma Processing"
+        
+        # Default fallback
+        return "Data Processing"
         
     def _on_layer_removed(self, layer_name: str):
-        """Handle layer removal"""
+        """Handle layer removal from 3-level hierarchy."""
         if layer_name in self.layer_widgets:
             widget_to_remove = self.layer_widgets.pop(layer_name)
+            parent = widget_to_remove.parentWidget()
             
-            # Find which group it's in
-            for group_widget in self.group_widgets.values():
-                if widget_to_remove in group_widget.layer_widgets:
-                    group_widget.remove_layer_widget(widget_to_remove)
-                    widget_to_remove.deleteLater()
-                    self._remove_group_from_layout_if_empty(group_widget)
-                    break
+            # Find the immediate parent container
+            while parent and not isinstance(parent, (SubgroupItemWidget, ScriptGroupWidget, GroupItemWidget)):
+                parent = parent.parentWidget()
 
-            # Clear selection if this was selected
+            if parent:
+                parent.remove_layer_item(widget_to_remove)
+                
+                # Clean up empty containers
+                if isinstance(parent, SubgroupItemWidget) and not parent.layer_widgets:
+                    # Remove empty run subgroup
+                    script_parent = parent.parentWidget()
+                    while script_parent and not isinstance(script_parent, ScriptGroupWidget):
+                        script_parent = script_parent.parentWidget()
+                    
+                    if script_parent:
+                        script_parent.remove_run_subgroup(parent)
+                    
+                    # Remove from tracking
+                    keys_to_remove = [k for k, v in self.subgroup_widgets.items() if v == parent]
+                    for key in keys_to_remove:
+                        del self.subgroup_widgets[key]
+                    
+                    parent.deleteLater()
+                
+                elif isinstance(parent, ScriptGroupWidget) and not parent.layer_widgets and not parent.run_subgroups:
+                    # Remove empty script group
+                    group_parent = parent.parentWidget()
+                    while group_parent and not isinstance(group_parent, GroupItemWidget):
+                        group_parent = group_parent.parentWidget()
+                    
+                    if group_parent:
+                        group_parent.remove_script_group(parent)
+                    
+                    # Remove from tracking
+                    keys_to_remove = [k for k, v in self.script_group_widgets.items() if v == parent]
+                    for key in keys_to_remove:
+                        del self.script_group_widgets[key]
+                    
+                    parent.deleteLater()
+
+            widget_to_remove.deleteLater()
+
             if self.current_layer == layer_name:
                 self.current_layer = None
                 self._update_controls_for_selection()
@@ -537,6 +1104,12 @@ class ModernLayerControlPanel(QWidget):
         if layer_name in self.layer_widgets:
             widget = self.layer_widgets[layer_name]
             widget.setup_ui()  # Refresh the widget
+
+    def _on_display_name_changed(self, layer_name: str, new_display_name: str):
+        """Handle display name changes from the manager."""
+        if layer_name in self.layer_widgets:
+            widget = self.layer_widgets[layer_name]
+            widget.name_label.setText(new_display_name)
         
     def _on_layer_visibility_toggled(self, layer_name: str, is_visible: bool):
         """Handle layer visibility toggle from widget"""
@@ -598,8 +1171,18 @@ class ModernLayerControlPanel(QWidget):
                 widget.update_opacity_display()
                     
     def _show_context_menu(self, position, layer_name: str, widget: LayerItemWidget):
-        """Show context menu for a layer"""
+        """Show context menu for a layer."""
+        layer = self.layer_manager.get_layer(layer_name)
+        if not layer:
+            return
+
         menu = QMenu(self)
+
+        # Rename Action
+        rename_action = menu.addAction("Rename")
+        rename_action.triggered.connect(lambda: self._rename_layer(layer_name))
+
+        menu.addSeparator()
         
         # Zoom to layer
         zoom_action = menu.addAction("Zoom to Layer")
@@ -607,7 +1190,26 @@ class ModernLayerControlPanel(QWidget):
         
         # Properties
         props_action = menu.addAction("Properties...")
-        props_action.triggered.connect(lambda: self.style_edit_requested.emit(layer_name))
+        props_action.triggered.connect(lambda: self._show_layer_properties(layer_name))
+        
+        # Metadata Info
+        metadata_action = menu.addAction("Show Metadata...")
+        metadata_action.triggered.connect(lambda: self._show_layer_metadata(layer_name))
+
+        # Process Action (if layer has traceability)
+        if self._can_process_layer(layer):
+            menu.addSeparator()
+            process_action = menu.addAction("Process...")
+            process_action.triggered.connect(lambda: self._process_layer(layer_name))
+
+        # View Generated Data Action
+        if layer.generated_output_files:
+            menu.addSeparator()
+            view_data_action = menu.addMenu("View Generated Data")
+            for fpath in layer.generated_output_files:
+                fname = os.path.basename(fpath)
+                action = view_data_action.addAction(fname)
+                action.triggered.connect(lambda checked, path=fpath: self.view_data_file_requested.emit(path))
         
         menu.addSeparator()
         
@@ -617,6 +1219,175 @@ class ModernLayerControlPanel(QWidget):
         
         # Show menu
         menu.exec_(widget.mapToGlobal(position))
+
+    def _rename_layer(self, layer_name: str):
+        """Prompt user for a new layer name and call the manager."""
+        layer = self.layer_manager.get_layer(layer_name)
+        if not layer:
+            return
+
+        current_name = layer.display_name
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Rename Layer",
+            "Enter new layer name:",
+            text=current_name
+        )
+
+        if ok and new_name and new_name != current_name:
+            self.layer_manager.rename_layer(layer_name, new_name)
+    
+    def _show_layer_properties(self, layer_name: str):
+        """Show layer properties dialog"""
+        layer = self.layer_manager.get_layer(layer_name)
+        if not layer:
+            return
+        
+        from .layer_style_editor import LayerStyleEditor
+        dialog = LayerStyleEditor(layer, self.layer_manager, self)
+        dialog.exec()
+    
+    def _show_layer_metadata(self, layer_name: str):
+        """Show detailed metadata information for a layer"""
+        layer = self.layer_manager.get_layer(layer_name)
+        if not layer:
+            return
+        
+        from qtpy.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QDialogButtonBox
+        from qtpy.QtCore import Qt
+        import json
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Layer Metadata - {layer.display_name or layer.name}")
+        dialog.setModal(True)
+        dialog.resize(600, 500)
+        
+        layout = QVBoxLayout()
+        
+        # Create metadata text display
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setFont(QFont("Courier", 10))
+        
+        # Format metadata info
+        metadata_info = []
+        metadata_info.append(f"=== LAYER INFORMATION ===")
+        metadata_info.append(f"Name: {layer.name}")
+        metadata_info.append(f"Display Name: {layer.display_name or 'None'}")
+        metadata_info.append(f"Type: {layer.layer_type.value}")
+        metadata_info.append(f"Geometry: {layer.geometry_type.value}")
+        metadata_info.append(f"Source: {layer.source.value}")
+        metadata_info.append(f"Visible: {layer.is_visible}")
+        metadata_info.append(f"Opacity: {layer.opacity}")
+        metadata_info.append("")
+        
+        metadata_info.append(f"=== TRACEABILITY ===")
+        # Use getattr for backward compatibility with older layers
+        processing_run_id = getattr(layer, 'processing_run_id', None)
+        source_script = getattr(layer, 'source_script', None)
+        input_files = getattr(layer, 'source_input_files', [])
+        output_files = getattr(layer, 'generated_output_files', [])
+        
+        metadata_info.append(f"Processing Run ID: {processing_run_id or 'None'}")
+        metadata_info.append(f"Source Script: {source_script or 'None'}")
+        
+        # Check if traceability data is missing and add note
+        if not processing_run_id and not source_script and not input_files and not output_files:
+            metadata_info.append("⚠️  Note: This layer was created before traceability features were added.")
+            metadata_info.append("   File traceability information is not available.")
+        
+        metadata_info.append(f"Input Files: {len(input_files)} files")
+        for i, file in enumerate(input_files):
+            metadata_info.append(f"  {i+1}. {file}")
+        metadata_info.append(f"Output Files: {len(output_files)} files")
+        for i, file in enumerate(output_files):
+            metadata_info.append(f"  {i+1}. {file}")
+        metadata_info.append("")
+        
+        metadata_info.append(f"=== PROCESSING HISTORY ===")
+        for i, step in enumerate(layer.processing_history):
+            metadata_info.append(f"{i+1}. {step}")
+        metadata_info.append("")
+        
+        metadata_info.append(f"=== DATA BOUNDS ===")
+        if layer.bounds:
+            metadata_info.append(f"Min X: {layer.bounds[0]}")
+            metadata_info.append(f"Min Y: {layer.bounds[1]}")
+            metadata_info.append(f"Max X: {layer.bounds[2]}")
+            metadata_info.append(f"Max Y: {layer.bounds[3]}")
+        else:
+            metadata_info.append("No bounds available")
+        metadata_info.append("")
+        
+        metadata_info.append(f"=== ADDITIONAL METADATA ===")
+        if layer.metadata:
+            metadata_info.append(json.dumps(layer.metadata, indent=2))
+        else:
+            metadata_info.append("No additional metadata")
+        
+        text_edit.setPlainText('\n'.join(metadata_info))
+        layout.addWidget(text_edit)
+        
+        # Add buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok)
+        button_box.accepted.connect(dialog.accept)
+        layout.addWidget(button_box)
+        
+        dialog.setLayout(layout)
+        dialog.exec()
+    
+    def _can_process_layer(self, layer: UXOLayer) -> bool:
+        """Check if a layer can be processed (has traceability data)"""
+        # Layer can be processed if it has generated output files or source input files
+        # Use getattr for backward compatibility with older layers
+        generated_files = getattr(layer, 'generated_output_files', [])
+        input_files = getattr(layer, 'source_input_files', [])
+        return bool(generated_files or input_files)
+    
+    def _process_layer(self, layer_name: str):
+        """Open processing dialog for a layer"""
+        layer = self.layer_manager.get_layer(layer_name)
+        if not layer:
+            return
+        
+        # Find the most relevant file for processing
+        file_to_process = None
+        
+        # First try generated output files (these are the actual data files)
+        # Use getattr for backward compatibility with older layers
+        generated_files = getattr(layer, 'generated_output_files', [])
+        input_files = getattr(layer, 'source_input_files', [])
+        
+        if generated_files:
+            file_to_process = generated_files[0]  # Use first file
+        # Fallback to source input files
+        elif input_files:
+            file_to_process = input_files[0]
+        
+        if file_to_process:
+            # Import the processing dialog
+            try:
+                from ..widgets.processing.processing_dialog import ProcessingDialog
+                dialog = ProcessingDialog(self, initial_file=file_to_process)
+                dialog.exec()
+            except ImportError:
+                # If processing dialog doesn't exist, show a message
+                from qtpy.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self,
+                    "Processing",
+                    f"Processing dialog not available.\nLayer file: {file_to_process}\n\nMetadata:\n"
+                    f"- Script: {getattr(layer, 'source_script', None) or 'Unknown'}\n"
+                    f"- Input files: {len(getattr(layer, 'source_input_files', []))} files\n"
+                    f"- Output files: {len(getattr(layer, 'generated_output_files', []))} files"
+                )
+        else:
+            from qtpy.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "No Data Files",
+                "This layer has no associated data files to process."
+            )
         
     def add_group(self):
         """Add a new layer group (placeholder)"""
@@ -635,6 +1406,88 @@ class ModernLayerControlPanel(QWidget):
         """Remove selected layer"""
         if self.current_layer:
             self.layer_manager.remove_layer(self.current_layer)
+    
+    def remove_group(self, group_widget: GroupItemWidget):
+        """Remove an entire group and all its layers"""
+        from qtpy.QtWidgets import QMessageBox
+        
+        # Count total layers in the group
+        total_layers = 0
+        for script_group in group_widget.script_groups:
+            total_layers += len(script_group.layer_widgets)
+            for run_subgroup in script_group.run_subgroups:
+                total_layers += len(run_subgroup.layer_widgets)
+        total_layers += len(group_widget.layer_widgets)
+        
+        if total_layers > 0:
+            reply = QMessageBox.question(
+                self,
+                "Remove Group",
+                f"Are you sure you want to remove the entire '{group_widget.group_name}' group?\n"
+                f"This will remove {total_layers} layers.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply != QMessageBox.Yes:
+                return
+        
+        # Remove all layers in the group
+        layers_to_remove = []
+        
+        # Collect all layer names from script groups
+        for script_group in group_widget.script_groups:
+            for layer_widget in script_group.layer_widgets:
+                layers_to_remove.append(layer_widget.layer.name)
+            for run_subgroup in script_group.run_subgroups:
+                for layer_widget in run_subgroup.layer_widgets:
+                    layers_to_remove.append(layer_widget.layer.name)
+        
+        # Collect direct layer names
+        for layer_widget in group_widget.layer_widgets:
+            layers_to_remove.append(layer_widget.layer.name)
+        
+        # Remove all layers
+        for layer_name in layers_to_remove:
+            self.layer_manager.remove_layer(layer_name)
+    
+    def remove_script_group(self, script_group_widget: ScriptGroupWidget):
+        """Remove an entire script group and all its layers"""
+        from qtpy.QtWidgets import QMessageBox
+        
+        # Count total layers in the script group
+        total_layers = len(script_group_widget.layer_widgets)
+        for run_subgroup in script_group_widget.run_subgroups:
+            total_layers += len(run_subgroup.layer_widgets)
+        
+        if total_layers > 0:
+            reply = QMessageBox.question(
+                self,
+                "Remove Script Group",
+                f"Are you sure you want to remove the entire '{script_group_widget._format_script_name(script_group_widget.script_name)}' script group?\n"
+                f"This will remove {total_layers} layers.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply != QMessageBox.Yes:
+                return
+        
+        # Remove all layers in the script group
+        layers_to_remove = []
+        
+        # Collect layer names from run subgroups
+        for run_subgroup in script_group_widget.run_subgroups:
+            for layer_widget in run_subgroup.layer_widgets:
+                layers_to_remove.append(layer_widget.layer.name)
+        
+        # Collect direct layer names
+        for layer_widget in script_group_widget.layer_widgets:
+            layers_to_remove.append(layer_widget.layer.name)
+        
+        # Remove all layers
+        for layer_name in layers_to_remove:
+            self.layer_manager.remove_layer(layer_name)
 
 
 # Keep backwards compatibility

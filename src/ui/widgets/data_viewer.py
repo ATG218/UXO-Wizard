@@ -1908,7 +1908,14 @@ class DataViewerTab(QWidget):
 
     def set_dataframe(self, df):
         """Set the DataFrame to display"""
-        self.model.setData(df)
+        # Check if the current model supports setData (PandasModel)
+        if hasattr(self.model, 'setData') and hasattr(self.model, '_data'):
+            self.model.setData(df)
+        else:
+            # For chunked/virtual models, replace with regular PandasModel
+            self.model = PandasModel(df)
+            self.table_view.setModel(self.model)
+        
         self.content_stack.setCurrentWidget(self.table_view)
         self.set_ui_for_content_type('data')
 

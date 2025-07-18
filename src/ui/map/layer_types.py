@@ -81,6 +81,10 @@ class UXOLayer:
     is_visible: bool = True
     opacity: float = 1.0
     z_index: int = 0
+
+    # User-facing and traceability attributes
+    display_name: Optional[str] = None
+    processing_run_id: Optional[str] = None
     
     # Coordinate system info
     crs: str = "EPSG:4326"
@@ -89,6 +93,9 @@ class UXOLayer:
     # Processing lineage
     parent_layer: Optional[str] = None
     processing_history: List[str] = field(default_factory=list)
+    source_script: Optional[str] = None
+    source_input_files: List[str] = field(default_factory=list)
+    generated_output_files: List[str] = field(default_factory=list)
     
     # Norwegian-specific
     utm_zone: Optional[int] = None  # 32, 33, 34, or 35 for Norway
@@ -97,6 +104,9 @@ class UXOLayer:
         """Validate and set defaults after initialization"""
         if self.style is None:
             self.style = LayerStyle()
+
+        if self.display_name is None:
+            self.display_name = self.name
             
         # Auto-detect UTM zone for Norwegian data if not set
         if self.utm_zone is None and self.bounds:

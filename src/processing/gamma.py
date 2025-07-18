@@ -15,8 +15,8 @@ from .base import BaseProcessor, ProcessingResult, ProcessingError
 class GammaProcessor(BaseProcessor):
     """Processor for Gamma Ray Spectrometer data with script framework support"""
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, project_manager=None):
+        super().__init__(project_manager=project_manager)
         self.name = "Gamma Processor"
         self.description = "Process gamma ray spectrometer data using various processing scripts"
         self.required_columns = []  # Will be detected automatically

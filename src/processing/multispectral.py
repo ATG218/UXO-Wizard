@@ -14,8 +14,8 @@ from .base import BaseProcessor, ProcessingResult, ProcessingError
 class MultispectralProcessor(BaseProcessor):
     """Processor for Multispectral imaging data"""
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, project_manager=None):
+        super().__init__(project_manager=project_manager)
         self.name = "Multispectral Processor"
         self.description = "Process multispectral imagery for anomaly detection"
         
