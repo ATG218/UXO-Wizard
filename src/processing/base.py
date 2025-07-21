@@ -41,10 +41,41 @@ except ImportError:
 
 # Import layer system components for layer generation
 try:
-    from ..ui.map.layer_types import UXOLayer, LayerType, GeometryType, LayerStyle, LayerSource, NORWEGIAN_CRS
+    # Import directly from the module to avoid ui package cascade
+    import sys
+    import os
+    import importlib.util
+    
+    # Get the absolute path to layer_types.py
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    layer_types_path = os.path.join(current_dir, '..', 'ui', 'map', 'layer_types.py')
+    layer_types_path = os.path.normpath(layer_types_path)
+    
+    # Import layer_types module directly
+    spec = importlib.util.spec_from_file_location("layer_types", layer_types_path)
+    layer_types_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(layer_types_module)
+    
+    # Extract the classes we need
+    UXOLayer = layer_types_module.UXOLayer
+    LayerType = layer_types_module.LayerType
+    GeometryType = layer_types_module.GeometryType
+    LayerStyle = layer_types_module.LayerStyle
+    LayerSource = layer_types_module.LayerSource
+    NORWEGIAN_CRS = layer_types_module.NORWEGIAN_CRS
+    
     LAYER_SYSTEM_AVAILABLE = True
-except ImportError:
-    logger.warning("Layer system not available - layer_types module not found")
+    logger.info("✓ Layer system successfully loaded via direct import")
+    logger.info(f"✓ Available layer types: {list(LayerType)}")
+    logger.info(f"✓ Available geometry types: {list(GeometryType)}")
+    logger.info(f"✓ UXOLayer class: {UXOLayer}")
+    logger.info("✓ Layer creation should work properly")
+except Exception as e:
+    logger.error(f"✗ Layer system not available - {str(e)}")
+    logger.error("✗ This will cause layer creation to be SKIPPED")
+    logger.error("✗ Scripts will create layer_outputs but they won't appear on the map")
+    import traceback
+    logger.error(f"✗ Full traceback: {traceback.format_exc()}")
     LAYER_SYSTEM_AVAILABLE = False
     # Define dummy classes for type hints when layer system not available
     GeometryType = str
@@ -254,19 +285,33 @@ class ProcessingWorker(QThread):
             result.processing_time = time.time() - start_time
             
             # Convert LayerOutput objects to UXOLayer objects and emit them
-            if result.success and result.layer_outputs and LAYER_SYSTEM_AVAILABLE:
-                logger.info(f"Processing {len(result.layer_outputs)} layer outputs")
+            if result.success and result.layer_outputs:
+                logger.info(f"Processing result has {len(result.layer_outputs)} layer outputs, LAYER_SYSTEM_AVAILABLE={LAYER_SYSTEM_AVAILABLE}")
+                if not LAYER_SYSTEM_AVAILABLE:
+                    logger.error("LAYER SYSTEM NOT AVAILABLE - This is why layers are not appearing on the map!")
+                    logger.error("Layer creation skipped because layer system imports failed")
+                    return
+                    
                 if self.processor_instance:
                     for layer_output in result.layer_outputs:
                         try:
+                            logger.info(f"Converting layer output: {layer_output.layer_type}")
                             uxo_layer = self._convert_layer_output_to_uxo_layer(layer_output, result)
                             if uxo_layer:
                                 self.layer_created.emit(uxo_layer)
-                                logger.info(f"Created and emitted layer: {uxo_layer.name}")
+                                logger.info(f"✓ Created and emitted layer: {uxo_layer.name}")
+                            else:
+                                logger.error(f"✗ _convert_layer_output_to_uxo_layer returned None for layer_type: {layer_output.layer_type}")
                         except Exception as e:
-                            logger.error(f"Failed to create layer: {str(e)}")
+                            logger.error(f"✗ Failed to create layer for {layer_output.layer_type}: {str(e)}")
+                            import traceback
+                            logger.error(traceback.format_exc())
                 else:
                     logger.warning("No processor instance available for layer creation")
+            elif result.success and not result.layer_outputs:
+                logger.info("Processing successful but no layer outputs generated")
+            elif not result.success:
+                logger.info("Processing failed, no layer creation attempted")
             
             self.finished.emit(result)
             
