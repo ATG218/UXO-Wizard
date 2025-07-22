@@ -461,7 +461,7 @@ class BaseProcessor(ABC):
                 return scripts
             
             # Find all Python files in the scripts directory
-            script_files = glob.glob(os.path.join(scripts_dir, '*.py'))
+            script_files = sorted(glob.glob(os.path.join(scripts_dir, '*.py')))
             
             for script_file in script_files:
                 # Skip __init__.py files

@@ -576,7 +576,7 @@ class MainWindow(QMainWindow):
             filename = filepath.split('/')[-1]
             
             # Handle data files - open ONLY in the bottom data viewer dock
-            if filepath.lower().endswith(('.csv', '.xlsx', '.xls', '.json', '.png', '.mplplot')):
+            if filepath.lower().endswith(('.csv', '.xlsx', '.xls', '.json', '.png', '.mplplot', '.txt', '.dat')):
                 # Load data in the main data viewer dock
                 self.data_viewer.load_data(filepath)
                 self.data_dock.show()
@@ -593,7 +593,7 @@ class MainWindow(QMainWindow):
                 return
             
             # Create appropriate viewer for non-data files
-            if filepath.lower().endswith(('.txt', '.dat', '.log', '.py', '.md')):
+            if filepath.lower().endswith(('.log', '.py', '.md')):
                 # Text file viewer
                 widget = self.create_text_viewer(filepath)
             else:

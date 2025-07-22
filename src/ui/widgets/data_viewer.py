@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QPushButton, QGroupBox, QCheckBox, QFrame, QRadioButton,
     QSpinBox, QFormLayout, QProgressBar, QTextEdit, QApplication
 )
-from PySide6.QtGui import QAction, QIcon, QPixmap, QKeySequence
+from PySide6.QtGui import QAction, QIcon, QPixmap, QKeySequence, QFont
 from PySide6.QtCore import Qt, Signal, QAbstractTableModel, QModelIndex, QEvent, QTimer
 import pandas as pd
 import numpy as np
@@ -1457,10 +1457,16 @@ class DataViewerTab(QWidget):
         self.image_viewer.viewport().installEventFilter(self)
 
         self.plot_widget = PlotWidget()
+        
+        # Text viewer for plain text files
+        self.text_viewer = QTextEdit()
+        self.text_viewer.setReadOnly(True)
+        self.text_viewer.setFont(QFont("Courier", 12))  # Monospace font for better text display
 
         self.content_stack.addWidget(self.table_view)
         self.content_stack.addWidget(self.image_viewer)
         self.content_stack.addWidget(self.plot_widget)
+        self.content_stack.addWidget(self.text_viewer)
 
         # Model
         self.model = PandasModel()
@@ -1775,11 +1781,12 @@ class DataViewerTab(QWidget):
             raise Exception("Failed to load CSV file with all attempted methods")
 
     def set_ui_for_content_type(self, content_type: str):
-        """Configures the UI for 'data' or 'image' content type"""
+        """Configures the UI for 'data', 'image', 'plot', or 'text' content type"""
         self.current_content_type = content_type
         is_data = (content_type == 'data')
         is_image = (content_type == 'image')
         is_plot = (content_type == 'plot')
+        is_text = (content_type == 'text')
 
         # Show/hide data-specific controls
         self.data_toolbar_widget.setVisible(is_data)
@@ -1792,7 +1799,7 @@ class DataViewerTab(QWidget):
         self.image_toolbar_widget.setVisible(is_image)
         
         # The export button is always visible, but its action depends on content type
-        self.export_btn.setEnabled(is_data or is_image or is_plot)
+        self.export_btn.setEnabled(is_data or is_image or is_plot or is_text)
 
         # For data, metadata button state is set in set_dataframe
         # For images, let's disable it for now.
@@ -1825,6 +1832,9 @@ class DataViewerTab(QWidget):
                 elif file_lower.endswith('.json'):
                     df = pd.read_json(filepath)
                     self.set_dataframe(df)
+            elif file_lower.endswith(('.txt', '.dat')):
+                # Display text files as plain text
+                self.load_text_file(filepath)
             elif file_lower.endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.tif')):
                 self.load_image(filepath)
             elif file_lower.endswith('.mplplot'):
@@ -1893,6 +1903,49 @@ class DataViewerTab(QWidget):
             
         except Exception as e:
             logger.error(f"Error loading image: {e}")
+            raise
+    
+    def load_text_file(self, filepath):
+        """Load and display a text file as plain text"""
+        try:
+            # Try to read with different encodings
+            encodings = ['utf-8', 'latin-1', 'cp1252']
+            content = None
+            
+            for encoding in encodings:
+                try:
+                    with open(filepath, 'r', encoding=encoding) as file:
+                        content = file.read()
+                    break
+                except UnicodeDecodeError:
+                    continue
+            
+            if content is None:
+                raise Exception("Could not decode file with any supported encoding")
+            
+            # Clear any previous data model
+            self.model.setData(pd.DataFrame())  # Clear with empty DataFrame
+            self.data_loader = None
+            
+            # Set the text content
+            self.text_viewer.setPlainText(content)
+            
+            # Switch to text viewer
+            self.content_stack.setCurrentWidget(self.text_viewer)
+            self.set_ui_for_content_type('text')
+            
+            # Update info label with file details
+            file_size = os.path.getsize(filepath)
+            file_size_kb = file_size / 1024
+            line_count = content.count('\n') + 1
+            char_count = len(content)
+            
+            self.info_label.setText(f"Text: {line_count} lines | {char_count} characters | Size: {file_size_kb:.1f} KB")
+            
+            logger.info(f"Successfully loaded text file: {line_count} lines, {char_count} characters")
+            
+        except Exception as e:
+            logger.error(f"Error loading text file: {e}")
             raise
     
     def load_plot(self, filepath):
@@ -2354,6 +2407,8 @@ class DataViewerTab(QWidget):
                 self.export_tabular_data()
             elif self.current_content_type == 'plot':
                 self.export_plot()
+            elif self.current_content_type == 'text':
+                self.export_text()
             else:
                 QMessageBox.information(self, "Export", "No content to export.")
         except Exception as e:
@@ -2578,6 +2633,29 @@ class DataViewerTab(QWidget):
             except Exception as e:
                 QMessageBox.critical(self, "Export Failed", f"Failed to export plot: {str(e)}")
                 logger.error(f"Export failed: {e}")
+    
+    def export_text(self):
+        """Export the currently displayed text content"""
+        content = self.text_viewer.toPlainText()
+        if not content:
+            QMessageBox.warning(self, "Export", "No text content to export.")
+            return
+
+        file_dialog = QFileDialog()
+        file_dialog.setAcceptMode(QFileDialog.AcceptSave)
+        file_dialog.setNameFilter("Text Files (*.txt);;All Files (*)")
+        file_dialog.setDefaultSuffix("txt")
+
+        if file_dialog.exec() == QFileDialog.Accepted:
+            export_path = file_dialog.selectedFiles()[0]
+            try:
+                with open(export_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                QMessageBox.information(self, "Export Complete", f"Text exported successfully to: {export_path}")
+                logger.info(f"Text content exported to: {export_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Export Failed", f"Failed to export text: {str(e)}")
+                logger.error(f"Text export failed: {e}")
 
     def show_context_menu(self, position):
         """Show context menu for table (only for data content)"""

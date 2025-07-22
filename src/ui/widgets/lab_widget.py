@@ -5,6 +5,7 @@ Lab Widget - Processing Output Explorer
 import os
 import sys
 import subprocess
+import shutil
 import pandas as pd
 from pathlib import Path
 from qtpy.QtWidgets import (
@@ -12,7 +13,7 @@ from qtpy.QtWidgets import (
     QFileSystemModel, QMenu, QMessageBox, QToolButton, QFrame, QSplitter,
     QTextEdit, QTabWidget, QStackedWidget, QDialog
 )
-from qtpy.QtCore import Qt, QDir, QFileInfo, Signal, QModelIndex, QTimer, QSettings
+from qtpy.QtCore import Qt, QDir, QFileInfo, Signal, QModelIndex, QTimer, QSettings, QItemSelectionModel
 from qtpy.QtGui import QFont, QIcon, QDesktopServices
 from .processing.processing_dialog import ProcessingDialog
 from loguru import logger
@@ -210,7 +211,7 @@ class LabWidget(QWidget):
         self.tree_view = QTreeView()
         self.tree_view.setHeaderHidden(False)
         self.tree_view.setAlternatingRowColors(True)
-        self.tree_view.setSelectionMode(QTreeView.SingleSelection)
+        self.tree_view.setSelectionMode(QTreeView.ExtendedSelection)
         self.tree_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree_view.setSortingEnabled(True)
         
@@ -615,14 +616,34 @@ class LabWidget(QWidget):
         index = self.tree_view.indexAt(position)
         if not index.isValid():
             return
-            
-        file_path = self.file_model.filePath(index)
-        file_info = QFileInfo(file_path)
+        
+        # Get all selected indexes
+        selected_indexes = self.tree_view.selectedIndexes()
+        # Filter to only get one index per row (column 0)
+        selected_indexes = [idx for idx in selected_indexes if idx.column() == 0]
+        
+        if not selected_indexes:
+            return
+        
+        # If clicked item is not in selection, select it
+        if index not in selected_indexes:
+            self.tree_view.selectionModel().clearSelection()
+            self.tree_view.selectionModel().select(index, QItemSelectionModel.Select)
+            selected_indexes = [index]
+        
+        selected_paths = [self.file_model.filePath(idx) for idx in selected_indexes]
+        selected_files = [f for f in selected_paths if QFileInfo(f).isFile()]
+        selected_dirs = [f for f in selected_paths if QFileInfo(f).isDir()]
+        
+        if not selected_paths:
+            return
         
         menu = QMenu(self)
         
-        if file_info.isFile():
-            # File actions
+        if len(selected_paths) == 1 and len(selected_files) == 1:
+            # Single file actions
+            file_path = selected_files[0]
+            
             if file_path.endswith(('.csv', '.txt', '.dat', '.json')):
                 open_action = menu.addAction("📊 Open in Data Viewer")
             elif file_path.endswith('.py'):
@@ -654,7 +675,28 @@ class LabWidget(QWidget):
             reveal_action.triggered.connect(lambda: self.reveal_in_folder(file_path))
             
             delete_action = menu.addAction("🗑️ Delete")
-            delete_action.triggered.connect(lambda: self.delete_file(file_path))
+            delete_action.triggered.connect(lambda: self.delete_items([file_path]))
+        elif len(selected_paths) == 1 and len(selected_dirs) == 1:
+            # Single folder actions
+            folder_path = selected_dirs[0]
+            
+            reveal_action = menu.addAction("📁 Show in Folder")
+            reveal_action.triggered.connect(lambda: self.reveal_in_folder(folder_path))
+            
+            delete_action = menu.addAction("🗑️ Delete Folder")
+            delete_action.triggered.connect(lambda: self.delete_items([folder_path]))
+        else:
+            # Multiple items selected - only show delete option
+            total_items = len(selected_files) + len(selected_dirs)
+            if len(selected_files) > 0 and len(selected_dirs) > 0:
+                item_desc = f"{len(selected_files)} files & {len(selected_dirs)} folders"
+            elif len(selected_files) > 0:
+                item_desc = f"{len(selected_files)} files"
+            else:
+                item_desc = f"{len(selected_dirs)} folders"
+                
+            delete_action = menu.addAction(f"🗑️ Delete {item_desc}")
+            delete_action.triggered.connect(lambda: self.delete_items(selected_paths))
             
         menu.exec(self.tree_view.mapToGlobal(position))
         
@@ -671,24 +713,136 @@ class LabWidget(QWidget):
         except Exception as e:
             logger.error(f"Failed to reveal file: {e}")
             
-    def delete_file(self, file_path: str):
-        """Delete a file with confirmation"""
-        reply = QMessageBox.question(
-            self, 
-            "Delete File",
-            f"Are you sure you want to delete:\n{os.path.basename(file_path)}?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
+    def delete_files(self, file_paths: list):
+        """Delete one or more files with confirmation"""
+        if len(file_paths) == 1:
+            file_path = file_paths[0]
+            reply = QMessageBox.question(
+                self, 
+                "Delete File",
+                f"Are you sure you want to delete:\n{os.path.basename(file_path)}?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+        else:
+            file_names = "\n".join([f"• {os.path.basename(f)}" for f in file_paths[:10]])  # Show max 10 names
+            if len(file_paths) > 10:
+                file_names += f"\n... and {len(file_paths) - 10} more files"
+            
+            reply = QMessageBox.question(
+                self, 
+                "Delete Files",
+                f"Are you sure you want to delete {len(file_paths)} files?\n\n{file_names}",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
         
         if reply == QMessageBox.Yes:
-            try:
-                os.remove(file_path)
-                self.log_activity(f"Deleted: {os.path.basename(file_path)}")
-                self.refresh_view()
-            except Exception as e:
-                logger.error(f"Failed to delete file: {e}")
-                QMessageBox.critical(self, "Error", f"Failed to delete file:\n{str(e)}")
+            deleted_count = 0
+            failed_files = []
+            
+            for file_path in file_paths:
+                try:
+                    os.remove(file_path)
+                    deleted_count += 1
+                    self.log_activity(f"Deleted: {os.path.basename(file_path)}")
+                except Exception as e:
+                    logger.error(f"Failed to delete file {file_path}: {e}")
+                    failed_files.append(os.path.basename(file_path))
+            
+            self.refresh_view()
+            
+            # Show result summary
+            if failed_files:
+                QMessageBox.warning(
+                    self, 
+                    "Delete Complete with Errors",
+                    f"Successfully deleted {deleted_count} files.\n"
+                    f"Failed to delete {len(failed_files)} files:\n" +
+                    "\n".join([f"• {f}" for f in failed_files[:5]]) +
+                    (f"\n... and {len(failed_files) - 5} more" if len(failed_files) > 5 else "")
+                )
+            elif len(file_paths) > 1:
+                self.log_activity(f"Successfully deleted {deleted_count} files")
+    
+    def delete_items(self, item_paths: list):
+        """Delete one or more files and/or folders with confirmation"""
+        if len(item_paths) == 1:
+            item_path = item_paths[0]
+            item_name = os.path.basename(item_path)
+            is_dir = os.path.isdir(item_path)
+            item_type = "folder" if is_dir else "file"
+            
+            reply = QMessageBox.question(
+                self, 
+                f"Delete {item_type.title()}",
+                f"Are you sure you want to delete {item_type}:\n{item_name}?" +
+                ("\n\nThis will delete all contents of the folder." if is_dir else ""),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+        else:
+            files = [f for f in item_paths if os.path.isfile(f)]
+            dirs = [f for f in item_paths if os.path.isdir(f)]
+            
+            item_names = []
+            if files:
+                item_names.extend([f"📄 {os.path.basename(f)}" for f in files[:5]])
+            if dirs:
+                item_names.extend([f"📁 {os.path.basename(d)}" for d in dirs[:5]])
+            
+            total_shown = len(files[:5]) + len(dirs[:5])
+            remaining = len(item_paths) - total_shown
+            
+            if remaining > 0:
+                item_names.append(f"... and {remaining} more items")
+            
+            item_list = "\n".join(item_names)
+            
+            reply = QMessageBox.question(
+                self, 
+                "Delete Items",
+                f"Are you sure you want to delete {len(item_paths)} items?\n\n{item_list}" +
+                ("\n\nThis will delete all contents of any folders." if dirs else ""),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+        
+        if reply == QMessageBox.Yes:
+            deleted_count = 0
+            failed_items = []
+            
+            for item_path in item_paths:
+                try:
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                        self.log_activity(f"Deleted folder: {os.path.basename(item_path)}")
+                    else:
+                        os.remove(item_path)
+                        self.log_activity(f"Deleted file: {os.path.basename(item_path)}")
+                    deleted_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to delete {item_path}: {e}")
+                    failed_items.append(os.path.basename(item_path))
+            
+            self.refresh_view()
+            
+            # Show result summary
+            if failed_items:
+                QMessageBox.warning(
+                    self, 
+                    "Delete Complete with Errors",
+                    f"Successfully deleted {deleted_count} items.\n"
+                    f"Failed to delete {len(failed_items)} items:\n" +
+                    "\n".join([f"• {f}" for f in failed_items[:5]]) +
+                    (f"\n... and {len(failed_items) - 5} more" if len(failed_items) > 5 else "")
+                )
+            elif len(item_paths) > 1:
+                self.log_activity(f"Successfully deleted {deleted_count} items")
+    
+    def delete_file(self, file_path: str):
+        """Delete a single file with confirmation (legacy method)"""
+        self.delete_files([file_path])
                 
     def refresh_view(self):
         """Refresh the file view"""
