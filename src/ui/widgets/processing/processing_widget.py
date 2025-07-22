@@ -628,7 +628,10 @@ class ProcessingWidget(QWidget):
             return
             
         # Start processing
+        logger.info(f"DEBUG PROCESSING WIDGET: About to call pipeline.process_data with processor_id={processor_id}")
+        logger.info(f"DEBUG PROCESSING WIDGET: current_data shape={self.current_data.shape if self.current_data is not None else 'None'}")
         self.pipeline.process_data(processor_id, self.current_data, params, self.current_input_file)
+        logger.info(f"DEBUG PROCESSING WIDGET: pipeline.process_data call completed")
         
     def cancel_processing(self):
         """Cancel current processing"""

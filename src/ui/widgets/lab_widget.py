@@ -5,14 +5,16 @@ Lab Widget - Processing Output Explorer
 import os
 import sys
 import subprocess
+import pandas as pd
 from pathlib import Path
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeView, QLabel, QPushButton,
     QFileSystemModel, QMenu, QMessageBox, QToolButton, QFrame, QSplitter,
-    QTextEdit, QTabWidget, QStackedWidget
+    QTextEdit, QTabWidget, QStackedWidget, QDialog
 )
 from qtpy.QtCore import Qt, QDir, QFileInfo, Signal, QModelIndex, QTimer, QSettings
 from qtpy.QtGui import QFont, QIcon, QDesktopServices
+from .processing.processing_dialog import ProcessingDialog
 from loguru import logger
 
 
@@ -22,10 +24,13 @@ class LabWidget(QWidget):
     # Signals
     file_selected = Signal(str)  # file_path
     script_executed = Signal(str)  # script_path
+    layer_created = Signal(object)  # Emits UXOLayer for map integration
+    plot_generated = Signal(object, str)  # Figure, title - for opening plots in data viewer
     
-    def __init__(self, project_root: str = None):
+    def __init__(self, project_root: str = None, project_manager=None):
         super().__init__()
         self.settings = QSettings("UXO-Wizard", "Desktop-Suite")
+        self.project_manager = project_manager
         
         # Initialize with provided project_root or restore from settings
         if project_root:
@@ -628,6 +633,11 @@ class LabWidget(QWidget):
                 open_action = menu.addAction("📄 Open File")
             open_action.triggered.connect(lambda: self.open_file(file_path))
             
+            # Add process option for data files
+            if file_path.endswith(('.csv', '.txt', '.dat', '.json')):
+                process_action = menu.addAction("⚡ Process...")
+                process_action.triggered.connect(lambda: self.process_file(file_path))
+            
             menu.addSeparator()
             
             if file_path.endswith('.py'):
@@ -815,4 +825,61 @@ class LabWidget(QWidget):
                 # Clean up invalid path from settings
                 self.settings.remove("last_project_path")
             # Keep placeholder view for invalid/missing projects
-            logger.info("Lab widget: showing placeholder - no valid project to restore") 
+            logger.info("Lab widget: showing placeholder - no valid project to restore")
+    
+    def process_file(self, file_path: str):
+        """Process the selected file using the processing dialog"""
+        try:
+            # Load the file as a DataFrame
+            df = self.load_dataframe(file_path)
+            if df is None:
+                raise ValueError("Unsupported file type for processing")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Failed to load file for processing: {str(e)}")
+            return
+            
+        dialog = ProcessingDialog(df, self, input_file_path=file_path, project_manager=self.project_manager)
+        
+        # Forward layer creation signals to enable map integration
+        dialog.layer_created.connect(self.layer_created.emit)
+        # Forward plot generation signals to enable data viewer integration  
+        dialog.plot_generated.connect(self.plot_generated.emit)
+        
+        if dialog.exec() == QDialog.Accepted:
+            result = dialog.get_result()
+            if result and result.success:
+                message = "Processing completed successfully!"
+                if result.output_file_path:
+                    message += f"\nOutput saved to: {result.output_file_path}"
+                QMessageBox.information(self, "Processing Complete", message)
+                self.log_activity(f"Processed file: {os.path.basename(file_path)}")
+                self.refresh_view()  # Refresh to show new output files
+            else:
+                error_msg = result.error_message if result else "Unknown error"
+                QMessageBox.critical(self, "Processing Failed", f"Processing failed: {error_msg}")
+                self.log_activity(f"Processing failed for: {os.path.basename(file_path)}")
+    
+    def load_dataframe(self, file_path: str) -> pd.DataFrame:
+        """Load a file as a pandas DataFrame"""
+        try:
+            if file_path.endswith('.csv'):
+                return pd.read_csv(file_path)
+            elif file_path.endswith(('.txt', '.dat')):
+                # Try different separators
+                for sep in [',', '\t', ' ', ';']:
+                    try:
+                        df = pd.read_csv(file_path, sep=sep)
+                        if len(df.columns) > 1:
+                            return df
+                    except:
+                        continue
+                # Fallback to default
+                return pd.read_csv(file_path)
+            elif file_path.endswith('.json'):
+                return pd.read_json(file_path)
+            else:
+                return None
+        except Exception as e:
+            logger.error(f"Failed to load {file_path}: {e}")
+            return None 

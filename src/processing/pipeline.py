@@ -27,6 +27,7 @@ class ProcessingPipeline(QObject):
     progress_updated = Signal(int, str)  # Progress percentage, message
     error_occurred = Signal(str)
     layer_created = Signal(object)  # UXOLayer created during processing
+    figures_generated = Signal(ProcessingResult)  # Figures added to result after processing
     
     def __init__(self, project_manager=None):
         super().__init__()
@@ -37,7 +38,6 @@ class ProcessingPipeline(QObject):
         # Try to create each processor and catch any import errors
         try:
             logger.debug("Creating MagneticProcessor...")
-            print(f"DEBUG: Creating MagneticProcessor with project_manager: {project_manager}")
             self.processors['magnetic'] = MagneticProcessor(project_manager=project_manager)
             logger.debug("MagneticProcessor created successfully")
         except Exception as e:
@@ -141,6 +141,7 @@ class ProcessingPipeline(QObject):
             
         # Create and configure worker
         logger.debug("Creating new processing worker thread")
+        logger.info(f"DEBUG PIPELINE: About to create ProcessingWorker for processor: {processor_id}")
         self.current_worker = ProcessingWorker(
             processor.process,
             data,
@@ -199,6 +200,11 @@ class ProcessingPipeline(QObject):
                 result.success = False
         
         self.processing_finished.emit(result)
+        
+        # If figures were added, emit a signal to update layer metadata
+        if result.success and result.metadata and 'figures' in result.metadata:
+            self.figures_generated.emit(result)
+        
         if result.success:
             logger.info(f"Processing completed successfully in {result.processing_time:.2f}s")
         else:
@@ -240,11 +246,18 @@ class ProcessingPipeline(QObject):
     def _create_output_directory(self, result: ProcessingResult) -> str:
         """Create and return output directory path - always use project working directory"""
         # Use project working directory if available
-        if self.project_manager and self.project_manager.get_current_working_directory():
+        if self.project_manager:
             project_dir = self.project_manager.get_current_working_directory()
-            base_output_dir = os.path.join(project_dir, "processed")
-        elif result.input_file_path:
-            # Find project root by looking for the first "processed" directory in the path
+            if project_dir:
+                base_output_dir = os.path.join(project_dir, "processed")
+            else:
+                project_dir = None
+        else:
+            project_dir = None
+            
+        if not project_dir and result.input_file_path:
+            print(f"DEBUG: Fallback - using input_file_path: {result.input_file_path}")
+            # Fallback: walk up from input file to find project root
             input_path = Path(result.input_file_path)
             project_dir = None
             
@@ -257,11 +270,13 @@ class ProcessingPipeline(QObject):
             # If no processed directory found, use directory containing input file
             if project_dir is None:
                 project_dir = input_path.parent
+                print(f"DEBUG: Fallback using input file parent: {project_dir}")
                 
             base_output_dir = os.path.join(project_dir, "processed")
-        else:
+        elif not project_dir:
             # Last resort: current working directory
             base_output_dir = os.path.join(os.getcwd(), "processed")
+            print(f"DEBUG: Last resort - using current working directory")
         
         # Create processor-specific subdirectory
         processor_type = result.metadata.get('processor', 'unknown')
@@ -388,19 +403,11 @@ class ProcessingPipeline(QObject):
             except Exception as e:
                 logger.error(f"✗ Failed to save interactive plot: {e}")
             
-            # Optionally save static PNG file (secondary format)
-            """
-            png_path = Path(output_dir) / f"{base_name}.png"
-            try:
-                result.figure.savefig(png_path, dpi=300, bbox_inches='tight')
-                plot_files.append(('png', str(png_path), 'Static plot image'))
-                logger.info(f"✓ Auto-saved static plot: {png_path}")
-            except Exception as e:
-                logger.warning(f"✗ Failed to save static plot: {e}")
-            """
-            # Add plot files to result outputs
+            # PNG generation disabled - only saving interactive .mplplot files
+            # Add plot files to result outputs and figures metadata
             for file_type, file_path, description in plot_files:
                 result.add_output_file(file_path, file_type, description)
+                result.add_figure_file(file_path, file_type, description)
             
             logger.info(f"Successfully auto-saved {len(plot_files)} plot files")
                 
