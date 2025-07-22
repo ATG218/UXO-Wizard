@@ -329,11 +329,12 @@ class UXOMapWidget(QWidget):
         Creates and stores a leaflet layer in the JavaScript context.
         Returns True on success, False on failure.
         """
-        if layer.layer_type in [LayerType.POINTS, LayerType.ANNOTATION] and layer.geometry_type == GeometryType.POINT:
+        # Use string values to avoid enum import collision issues
+        if layer.layer_type.value in ['points', 'annotation'] and layer.geometry_type.value == 'point':
             return self._create_point_layer_geojson(layer)
-        elif layer.layer_type == LayerType.RASTER:
+        elif layer.layer_type.value == 'raster':
             return self._create_raster_layer(layer)
-        elif layer.layer_type == LayerType.VECTOR and layer.geometry_type == GeometryType.LINE:
+        elif layer.layer_type.value in ['vector', 'flight_lines'] and layer.geometry_type.value == 'line':
             return self._create_vector_layer_geojson(layer)
         else:
             logger.warning(f"Unsupported combination of layer type '{layer.layer_type.value}' and geometry type '{layer.geometry_type.value}'")

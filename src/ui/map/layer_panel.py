@@ -12,7 +12,7 @@ from qtpy.QtWidgets import (
     QScrollArea, QStackedWidget
 )
 from qtpy.QtCore import Qt, Signal, QSize, QTimer
-from qtpy.QtGui import QFont, QIcon, QPixmap, QPainter, QColor, QBrush
+from qtpy.QtGui import QFont, QIcon, QPixmap, QPainter, QColor, QBrush, QAction
 from typing import Dict, Optional, List
 from loguru import logger
 
@@ -203,6 +203,9 @@ class ScriptGroupWidget(QFrame):
             parent.remove_script_group(self)
 
     def _toggle_expansion(self, event=None):
+        # Only toggle on left-click, not right-click
+        if event and hasattr(event, 'button') and event.button() != Qt.LeftButton:
+            return
         self.is_expanded = not self.is_expanded
         self.container.setVisible(self.is_expanded)
         self._update_arrow()
@@ -346,6 +349,9 @@ class SubgroupItemWidget(QFrame):
         return run_id
 
     def _toggle_expansion(self, event=None):
+        # Only toggle on left-click, not right-click
+        if event and hasattr(event, 'button') and event.button() != Qt.LeftButton:
+            return
         self.is_expanded = not self.is_expanded
         self.layer_container.setVisible(self.is_expanded)
         self._update_arrow()
@@ -406,7 +412,7 @@ class SubgroupItemWidget(QFrame):
                 # Remove all layers in this run group
                 layer_names_to_remove = []
                 for layer_widget in self.layer_widgets:
-                    layer_names_to_remove.append(layer_widget.layer_name)
+                    layer_names_to_remove.append(layer_widget.layer.name)
                 
                 # Remove each layer
                 for layer_name in layer_names_to_remove:
@@ -502,6 +508,9 @@ class GroupItemWidget(QFrame):
         self._update_arrow()
 
     def _toggle_expansion(self, event=None):
+        # Only toggle on left-click, not right-click
+        if event and hasattr(event, 'button') and event.button() != Qt.LeftButton:
+            return
         self.is_expanded = not self.is_expanded
         self.layer_container.setVisible(self.is_expanded)
         self._update_arrow()
@@ -688,10 +697,9 @@ class LayerItemWidget(QWidget):
             
     def _toggle_visibility(self):
         """Toggle layer visibility"""
-        new_visibility = not self.layer.is_visible
-        # Emit signal to let the layer manager handle the change
+        # Don't update layer.is_visible here - let the layer manager do it
         # This maintains the proper signal chain: widget -> layer panel -> layer manager -> map widget
-        self.visibility_changed.emit(self.layer.name, new_visibility)
+        self.visibility_changed.emit(self.layer.name, not self.layer.is_visible)
             
     def _get_layer_color(self) -> QColor:
         """Get color for layer type and source"""
@@ -1296,12 +1304,59 @@ class ModernLayerControlPanel(QWidget):
             metadata_info.append("⚠️  Note: This layer was created before traceability features were added.")
             metadata_info.append("   File traceability information is not available.")
         
-        metadata_info.append(f"Input Files: {len(input_files)} files")
-        for i, file in enumerate(input_files):
-            metadata_info.append(f"  {i+1}. {file}")
-        metadata_info.append(f"Output Files: {len(output_files)} files")
-        for i, file in enumerate(output_files):
-            metadata_info.append(f"  {i+1}. {file}")
+        # Input Files Section
+        metadata_info.append(f"📁 Input Files: {len(input_files)}")
+        if input_files:
+            for i, file in enumerate(input_files):
+                filename = file.split('/')[-1]  # Show just filename
+                metadata_info.append(f"   {i+1}. {filename}")
+                metadata_info.append(f"      Path: {file}")
+        else:
+            metadata_info.append("   (None)")
+        metadata_info.append("")
+        
+        # Output Files Section  
+        metadata_info.append(f"📄 Output Files: {len(output_files)}")
+        if output_files:
+            for i, file in enumerate(output_files):
+                filename = file.split('/')[-1]  # Show just filename
+                metadata_info.append(f"   {i+1}. {filename}")
+                metadata_info.append(f"      Path: {file}")
+        else:
+            metadata_info.append("   (None)")
+        metadata_info.append("")
+        
+        # Generated Figures Section
+        figures_info = []
+        if hasattr(layer, 'metadata') and layer.metadata:
+            if 'figures' in layer.metadata:
+                figures_info = layer.metadata['figures']
+            elif 'figure_count' in layer.metadata:
+                figures_info = [{'description': 'Generated figure'}] * layer.metadata['figure_count']
+            elif 'has_pending_figure' in layer.metadata:
+                figures_info = [{'description': 'Interactive plot (.mplplot file)'}]
+        
+        metadata_info.append(f"📊 Generated Figures: {len(figures_info)} files")
+        if figures_info:
+            for i, fig_info in enumerate(figures_info):
+                if isinstance(fig_info, dict):
+                    desc = fig_info.get('description', 'Interactive matplotlib plot')
+                    file_path = fig_info.get('file_path', 'Generated by pipeline')
+                    if file_path and not file_path.startswith('Generated by pipeline'):
+                        # Real file path available
+                        filename = file_path.split('/')[-1]
+                        metadata_info.append(f"   {i+1}. {filename}")
+                        metadata_info.append(f"      Path: {file_path}")
+                        metadata_info.append(f"      Type: {desc}")
+                    else:
+                        # Placeholder or auto-generated
+                        metadata_info.append(f"   {i+1}. {desc}")
+                        metadata_info.append(f"      Status: Auto-saved to project/processed/ directory")
+                        metadata_info.append(f"      Format: Interactive .mplplot file")
+                else:
+                    metadata_info.append(f"   {i+1}. {str(fig_info)}")
+        else:
+            metadata_info.append("   (None)")
         metadata_info.append("")
         
         metadata_info.append(f"=== PROCESSING HISTORY ===")

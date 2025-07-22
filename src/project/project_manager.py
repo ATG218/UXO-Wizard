@@ -139,9 +139,7 @@ class ProjectManager(QObject):
         """Get current working directory"""
         if self.current_project and self.current_project.working_directory:
             result = str(self.current_project.working_directory)
-            print(f"DEBUG: ProjectManager.get_current_working_directory() - from project: {result}")
             return result
-        print(f"DEBUG: ProjectManager.get_current_working_directory() - from _current_working_directory: {self._current_working_directory}")
         return self._current_working_directory
     
     def set_data_viewer(self, data_viewer):

@@ -100,18 +100,22 @@ class ProjectExplorer(QWidget):
     file_selected = Signal(str)
     project_changed = Signal(str)
     open_project_requested = Signal()
+    layer_created = Signal(object)  # Emits UXOLayer for map integration
+    plot_generated = Signal(object, str)  # Figure, title - for opening plots in data viewer
     
-    def __init__(self):
+    def __init__(self, project_manager=None, auto_restore=True):
         super().__init__()
         self.clipboard_paths = []
         self.is_cut = False
         self.clicked_path = None
         self.current_project_path = None
+        self.project_manager = project_manager
         self.settings = QSettings("UXO-Wizard", "Desktop-Suite")
         self.setup_ui()
         
-        # Restore last project after UI is set up
-        self.restore_last_project()
+        # Restore last project after UI is set up (unless disabled)
+        if auto_restore:
+            self.restore_last_project()
         
     def setup_ui(self):
         """Initialize the UI"""
@@ -635,7 +639,13 @@ class ProjectExplorer(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Load Error", f"Failed to load file for processing: {str(e)}")
             return
-        dialog = ProcessingDialog(df, self, input_file_path=path, project_manager=None)
+        dialog = ProcessingDialog(df, self, input_file_path=path, project_manager=self.project_manager)
+        
+        # Forward layer creation signals to enable map integration
+        dialog.layer_created.connect(self.layer_created.emit)
+        # Forward plot generation signals to enable data viewer integration
+        dialog.plot_generated.connect(self.plot_generated.emit)
+        
         if dialog.exec() == QDialog.Accepted:
             result = dialog.get_result()
             if result and result.success:

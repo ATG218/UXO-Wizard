@@ -42,6 +42,12 @@ class MainWindow(QMainWindow):
         self.setup_statusbar()
         self.setup_connections()
         
+        # IMPORTANT: Restore project AFTER connections are set up
+        # This ensures the project_changed signal is properly handled
+        if hasattr(self.project_explorer, 'restore_last_project'):
+            # Force project restoration after connections are established
+            self.project_explorer.restore_last_project()
+        
         # Restore state or apply default layout if no state exists
         if not self.restore_state():
             logger.info("No saved state found, applying default UI layout.")
@@ -228,7 +234,7 @@ class MainWindow(QMainWindow):
         # Project Explorer Dock (far left)
         self.project_dock = QDockWidget("File Explorer", self)
         self.project_dock.setObjectName("ProjectExplorerDock")
-        self.project_explorer = ProjectExplorer()
+        self.project_explorer = ProjectExplorer(self.project_manager, auto_restore=False)
         self.project_dock.setWidget(self.project_explorer)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.project_dock)
         
@@ -244,7 +250,7 @@ class MainWindow(QMainWindow):
         self.lab_dock = QDockWidget("Lab", self)
         self.lab_dock.setObjectName("LabDock")
         from .widgets.lab_widget import LabWidget
-        self.lab_widget = LabWidget(self.project_root if hasattr(self, 'project_root') else None)
+        self.lab_widget = LabWidget(self.project_root if hasattr(self, 'project_root') else None, project_manager=self.project_manager)
         self.lab_dock.setWidget(self.lab_widget)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.lab_dock)
         
@@ -395,11 +401,24 @@ class MainWindow(QMainWindow):
         
         # NEW: Connect DataViewer layer creation to map
         # This enables the "Plot on Map" button functionality
-        self.data_viewer.layer_created.connect(lambda layer: (
-            self.map_widget.add_layer_realtime(layer),
-            self.map_dock.raise_(),  # Bring map to front
+        def handle_layer_created(layer):
+            logger.info(f"DEBUG: MainWindow received layer_created signal for: {layer.name}")
+            self.map_widget.add_layer_realtime(layer)
+            self.map_dock.raise_()  # Bring map to front
             logger.info(f"Added layer '{layer.name}' from DataViewer to map")
-        ))
+        
+        self.data_viewer.layer_created.connect(handle_layer_created)
+        self.project_explorer.layer_created.connect(handle_layer_created)  # Enable map integration for right-click processing
+        self.lab_widget.layer_created.connect(handle_layer_created)  # Enable map integration for lab widget processing
+        
+        # Connect plot generation signals to data viewer
+        def handle_plot_generated(figure, title):
+            logger.info(f"MainWindow received plot_generated signal: {title}")
+            self.data_viewer.add_plot_tab(figure, title)
+            self.data_dock.raise_()  # Bring data viewer to front
+            
+        self.project_explorer.plot_generated.connect(handle_plot_generated)
+        self.lab_widget.plot_generated.connect(handle_plot_generated)
         
         # Advanced map connections
         self.map_widget.coordinates_clicked.connect(self.on_map_coordinates_clicked)
@@ -426,6 +445,7 @@ class MainWindow(QMainWindow):
         
     def on_project_changed(self, project_path):
         """Handle project path changes"""
+        print(f"DEBUG: on_project_changed called with: {project_path}")
         if project_path:
             # Project opened
             folder_name = project_path.split('/')[-1]
@@ -436,6 +456,7 @@ class MainWindow(QMainWindow):
             self.lab_widget.set_project_root(project_path)
             
             # Update project manager with current working directory
+            print(f"DEBUG: Setting project_manager working directory to: {project_path}")
             self.project_manager.set_current_working_directory(project_path)
         else:
             # Project closed
