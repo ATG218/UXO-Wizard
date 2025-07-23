@@ -172,6 +172,15 @@ class ScriptInterface(ABC):
         self.project_manager = project_manager
     
     @property
+    def handles_own_output(self) -> bool:
+        """Whether this script creates its own output files and doesn't need pipeline CSV generation
+        
+        Returns:
+            True if script handles its own output files (default: False)
+        """
+        return False
+    
+    @property
     @abstractmethod
     def name(self) -> str:
         """Human-readable script name for UI display"""

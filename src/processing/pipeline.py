@@ -182,14 +182,14 @@ class ProcessingPipeline(QObject):
                 # Set input file path in result
                 result.input_file_path = self.current_input_file
                 
-                # Generate output file automatically (only if there's data)
-                if result.data is not None:
+                # Generate output file automatically (only if there's data and script doesn't handle its own output)
+                if result.data is not None and not self._script_handles_own_output(result):
                     output_path = self._generate_output_file(result)
                     result.output_file_path = output_path
                     logger.info(f"Processed data saved to: {output_path}")
                     
-                    # Generate metadata sidecar file
-                    self._generate_metadata_file(result)
+                # Always integrate metadata (whether we generate output file or not)
+                self._integrate_metadata(result)
                 
                 # Auto-save any generated plots (independent of data)
                 self._save_plot_files(result)
@@ -360,7 +360,61 @@ class ProcessingPipeline(QObject):
             json.dump(metadata, f, indent=2, default=str)
             
         logger.debug(f"Generated metadata file: {metadata_path}")
-        return str(metadata_path) 
+        return str(metadata_path)
+    
+    def _script_handles_own_output(self, result: ProcessingResult) -> bool:
+        """Check if the processing script handles its own output files"""
+        # Get processor type from result metadata
+        processor_type = result.metadata.get('processor') if result.metadata else None
+        if not processor_type:
+            return False
+            
+        # Get the processor
+        processor = self.processors.get(processor_type)
+        if not processor:
+            return False
+            
+        # Get the current script from the processor using the script name
+        script_name = result.processing_script
+        if not script_name:
+            return False
+            
+        # Find the script in the processor's available_scripts
+        for script in processor.available_scripts.values():
+            if script.name == script_name:
+                if hasattr(script, 'handles_own_output'):
+                    return script.handles_own_output
+                break
+                
+        return False
+    
+    def _integrate_metadata(self, result: ProcessingResult) -> None:
+        """Integrate processing metadata directly into result metadata instead of separate JSON file"""
+        if not result.metadata:
+            result.metadata = {}
+            
+        # Add processing information to metadata
+        result.metadata.update({
+            'processing_info': {
+                'processor_type': result.metadata.get('processor', 'unknown'),
+                'processing_script': result.processing_script,
+                'processing_time': result.processing_time,
+                'timestamp': datetime.now().isoformat(),
+                'success': result.success
+            },
+            'file_info': {
+                'input_file': result.input_file_path,
+                'output_file': result.output_file_path,
+                'export_format': result.export_format,
+                'data_shape': list(result.data.shape) if result.data is not None else None
+            }
+        })
+        
+        # Add parameters if not already in metadata
+        if 'parameters' not in result.metadata:
+            result.metadata['parameters'] = {}
+            
+        logger.debug("Integrated processing metadata into result metadata") 
     
     def _save_plot_files(self, result: ProcessingResult):
         """Automatically save any generated matplotlib figures"""

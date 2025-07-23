@@ -40,6 +40,11 @@ class FlightPathSegmenter(ScriptInterface):
     def name(self) -> str:
         return "Flight Path Segmenter"
     
+    @property
+    def handles_own_output(self) -> bool:
+        """This script creates its own segmented CSV files in _segmented directory"""
+        return True
+    
     @property  
     def description(self) -> str:
         return "Automatically segment flight paths into directional segments based on heading consistency for grid pattern surveys"

@@ -626,6 +626,19 @@ class ProcessingWidget(QWidget):
                 
         if not processor_id:
             return
+
+        # Log processing start event
+        if self.pipeline.project_manager and self.pipeline.project_manager.history_logger:
+            script_id = params.get('script_selection', {}).get('script_name', {}).get('value')
+            self.pipeline.project_manager.history_logger.log_event(
+                'processing.started',
+                {
+                    'processor_id': processor_id,
+                    'script_id': script_id,
+                    'input_file': self.current_input_file,
+                    'parameters': params
+                }
+            )
             
         # Start processing
         logger.info(f"DEBUG PROCESSING WIDGET: About to call pipeline.process_data with processor_id={processor_id}")
@@ -654,6 +667,100 @@ class ProcessingWidget(QWidget):
             self.progress_bar.setValue(100)
             self.status_label.setText("Processing complete!")
             self.processing_complete.emit(result)
+
+            # Log processing completion event
+            if self.pipeline.project_manager and self.pipeline.project_manager.history_logger:
+                outputs = []
+                
+                # Capture layer outputs
+                if result.layer_outputs:
+                    for layer_output in result.layer_outputs:
+                        outputs.append({
+                            'type': 'layer',
+                            'layer_name': getattr(layer_output, 'name', 'Unnamed Layer'),
+                            'layer_type': layer_output.layer_type,
+                            'source_file': layer_output.data if isinstance(layer_output.data, str) else f"in-memory {type(layer_output.data).__name__}"
+                        })
+                
+                # Capture plot outputs
+                if hasattr(result, 'plot_outputs') and result.plot_outputs:
+                    for plot_output in result.plot_outputs:
+                        outputs.append({
+                            'type': 'plot',
+                            'title': getattr(plot_output, 'title', 'Unnamed Plot'),
+                            'source_file': getattr(plot_output, 'file_path', 'in-memory plot')
+                        })
+                
+                # Capture data outputs  
+                if hasattr(result, 'data_outputs') and result.data_outputs:
+                    for data_output in result.data_outputs:
+                        outputs.append({
+                            'type': 'data',
+                            'description': getattr(data_output, 'description', 'Processed data'),
+                            'source_file': getattr(data_output, 'file_path', 'in-memory data')
+                        })
+                
+                # Create comprehensive metadata dump including all ProcessingResult information
+                metadata_dump = {
+                    # Core processing result metadata (from script)
+                    'script_metadata': result.metadata or {},
+                    
+                    # Processing execution details
+                    'execution_details': {
+                        'success': result.success,
+                        'processing_time_seconds': result.processing_time,
+                        'processing_script': result.processing_script,
+                        'input_file_path': result.input_file_path,
+                        'output_file_path': result.output_file_path,
+                        'export_format': result.export_format,
+                        'processor_type': result.processor_type,
+                        'script_id': result.script_id,
+                        'data_shape': list(result.data.shape) if result.data is not None else None,
+                        'data_columns': list(result.data.columns) if result.data is not None else None
+                    },
+                    
+                    # Output files information
+                    'output_files': [
+                        {
+                            'file_path': of.file_path,
+                            'file_type': of.file_type,
+                            'description': of.description,
+                            'metadata': of.metadata
+                        } for of in result.output_files
+                    ] if hasattr(result, 'output_files') else [],
+                    
+                    # Layer outputs information
+                    'layer_outputs': [
+                        {
+                            'layer_type': lo.layer_type,
+                            'data_type': type(lo.data).__name__,
+                            'data_info': {
+                                'shape': list(lo.data.shape) if hasattr(lo.data, 'shape') else None,
+                                'columns': list(lo.data.columns) if hasattr(lo.data, 'columns') else None,
+                                'length': len(lo.data) if hasattr(lo.data, '__len__') else None
+                            },
+                            'style_info': lo.style_info,
+                            'metadata': lo.metadata
+                        } for lo in result.layer_outputs
+                    ] if hasattr(result, 'layer_outputs') else [],
+                    
+                    # Figure information
+                    'figure_info': {
+                        'has_figure': result.figure is not None,
+                        'figure_type': type(result.figure).__name__ if result.figure else None
+                    }
+                }
+
+                self.pipeline.project_manager.history_logger.log_event(
+                    'processing.completed',
+                    {
+                        'status': 'success',
+                        'execution_time_seconds': result.processing_time,
+                        'error_message': None,
+                        'outputs': outputs,
+                        'metadata': metadata_dump  # Enhanced metadata dump
+                    }
+                )
             
             # NOTE: Automatic data signal emission removed for clean processor architecture
             # if result.data is not None:
@@ -664,6 +771,66 @@ class ProcessingWidget(QWidget):
         else:
             self.status_label.setText(f"Error: {result.error_message}")
             self.progress_bar.setValue(0)
+            
+            # Log processing failure event
+            if self.pipeline.project_manager and self.pipeline.project_manager.history_logger:
+                # Create comprehensive metadata dump for failed processing too
+                failure_metadata_dump = {
+                    # Core processing result metadata (from script)
+                    'script_metadata': result.metadata or {},
+                    
+                    # Processing execution details
+                    'execution_details': {
+                        'success': result.success,
+                        'processing_time_seconds': result.processing_time,
+                        'processing_script': result.processing_script,
+                        'input_file_path': result.input_file_path,
+                        'output_file_path': result.output_file_path,
+                        'export_format': result.export_format,
+                        'processor_type': result.processor_type,
+                        'script_id': result.script_id,
+                        'data_shape': list(result.data.shape) if result.data is not None else None,
+                        'data_columns': list(result.data.columns) if result.data is not None else None,
+                        'error_message': result.error_message
+                    },
+                    
+                    # Output files information (may be empty for failures)
+                    'output_files': [
+                        {
+                            'file_path': of.file_path,
+                            'file_type': of.file_type,
+                            'description': of.description,
+                            'metadata': of.metadata
+                        } for of in result.output_files
+                    ] if hasattr(result, 'output_files') else [],
+                    
+                    # Layer outputs information (may be empty for failures)
+                    'layer_outputs': [
+                        {
+                            'layer_type': lo.layer_type,
+                            'data_type': type(lo.data).__name__,
+                            'style_info': lo.style_info,
+                            'metadata': lo.metadata
+                        } for lo in result.layer_outputs
+                    ] if hasattr(result, 'layer_outputs') else [],
+                    
+                    # Figure information
+                    'figure_info': {
+                        'has_figure': result.figure is not None,
+                        'figure_type': type(result.figure).__name__ if result.figure else None
+                    }
+                }
+                
+                self.pipeline.project_manager.history_logger.log_event(
+                    'processing.completed',
+                    {
+                        'status': 'failure',
+                        'execution_time_seconds': result.processing_time,
+                        'error_message': result.error_message,
+                        'outputs': [],
+                        'metadata': failure_metadata_dump  # Enhanced metadata dump
+                    }
+                )
             
     def on_progress_updated(self, value: int, message: str):
         """Update progress display"""

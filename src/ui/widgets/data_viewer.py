@@ -10,7 +10,8 @@ from PySide6.QtWidgets import (
     QTabWidget, QHBoxLayout, QFileDialog, QSizePolicy,
     QStackedWidget, QScrollArea, QListWidget, QListWidgetItem,
     QPushButton, QGroupBox, QCheckBox, QFrame, QRadioButton,
-    QSpinBox, QFormLayout, QProgressBar, QTextEdit, QApplication
+    QSpinBox, QFormLayout, QProgressBar, QTextEdit, QApplication,
+    QTreeWidget, QTreeWidgetItem
 )
 from PySide6.QtGui import QAction, QIcon, QPixmap, QKeySequence, QFont
 from PySide6.QtCore import Qt, Signal, QAbstractTableModel, QModelIndex, QEvent, QTimer
@@ -1214,9 +1215,16 @@ class PandasModel(QAbstractTableModel):
             value = self._data.iloc[index.row(), index.column()]
             
             # Format display based on data type
-            if pd.isna(value):
-                return "NaN"
-            elif isinstance(value, (np.float64, np.float32, float)):
+            try:
+                # Handle scalar values first
+                if pd.isna(value):
+                    return "NaN"
+            except (ValueError, TypeError):
+                # Handle arrays/complex types that can't be checked with pd.isna()
+                if hasattr(value, '__len__') and not isinstance(value, str):
+                    return f"[{type(value).__name__}] {str(value)[:100]}..."
+            
+            if isinstance(value, (np.float64, np.float32, float)):
                 return f"{value:.6f}"
             else:
                 return str(value)
@@ -1462,15 +1470,25 @@ class DataViewerTab(QWidget):
         self.text_viewer = QTextEdit()
         self.text_viewer.setReadOnly(True)
         self.text_viewer.setFont(QFont("Courier", 12))  # Monospace font for better text display
+        
+        # JSON tree viewer for nested structures
+        self.json_tree = QTreeWidget()
+        self.json_tree.setHeaderLabels(["Key", "Value", "Type"])
+        self.json_tree.setAlternatingRowColors(True)
+        self.json_tree.setSortingEnabled(True)
 
         self.content_stack.addWidget(self.table_view)
         self.content_stack.addWidget(self.image_viewer)
         self.content_stack.addWidget(self.plot_widget)
         self.content_stack.addWidget(self.text_viewer)
+        self.content_stack.addWidget(self.json_tree)
 
         # Model
         self.model = PandasModel()
         self.table_view.setModel(self.model)
+        
+        # JSON data storage for export
+        self._current_json_data = None
         
         # Context menu
         self.table_view.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1781,12 +1799,13 @@ class DataViewerTab(QWidget):
             raise Exception("Failed to load CSV file with all attempted methods")
 
     def set_ui_for_content_type(self, content_type: str):
-        """Configures the UI for 'data', 'image', 'plot', or 'text' content type"""
+        """Configures the UI for 'data', 'image', 'plot', 'text', or 'json' content type"""
         self.current_content_type = content_type
         is_data = (content_type == 'data')
         is_image = (content_type == 'image')
         is_plot = (content_type == 'plot')
         is_text = (content_type == 'text')
+        is_json = (content_type == 'json')
 
         # Show/hide data-specific controls
         self.data_toolbar_widget.setVisible(is_data)
@@ -1799,7 +1818,7 @@ class DataViewerTab(QWidget):
         self.image_toolbar_widget.setVisible(is_image)
         
         # The export button is always visible, but its action depends on content type
-        self.export_btn.setEnabled(is_data or is_image or is_plot or is_text)
+        self.export_btn.setEnabled(is_data or is_image or is_plot or is_text or is_json)
 
         # For data, metadata button state is set in set_dataframe
         # For images, let's disable it for now.
@@ -1830,8 +1849,7 @@ class DataViewerTab(QWidget):
                     df = pd.read_excel(filepath)
                     self.set_dataframe(df)
                 elif file_lower.endswith('.json'):
-                    df = pd.read_json(filepath)
-                    self.set_dataframe(df)
+                    self.load_json_file(filepath)
             elif file_lower.endswith(('.txt', '.dat')):
                 # Display text files as plain text
                 self.load_text_file(filepath)
@@ -1958,6 +1976,121 @@ class DataViewerTab(QWidget):
         except Exception as e:
             logger.error(f"Error loading plot: {e}")
             raise
+    
+    def load_json_file(self, filepath):
+        """Load and display a JSON file, using tree view for nested structures"""
+        import json
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                json_data = json.load(f)
+            
+            # Try to convert to DataFrame first
+            try:
+                df = pd.json_normalize(json_data) if isinstance(json_data, (dict, list)) else pd.read_json(filepath)
+                
+                # Check if the data is simple tabular (no nested structures)
+                has_nested = self._has_nested_structure(df)
+                
+                if not has_nested and len(df) > 0:
+                    # Use tabular view for simple flat data
+                    self.set_dataframe(df)
+                    logger.info(f"Loaded JSON as tabular data: {len(df)} rows")
+                else:
+                    # Use tree view for nested structures
+                    self._load_json_tree(json_data, filepath)
+                    
+            except (ValueError, pd.errors.ParserError):
+                # If pandas can't handle it, use tree view
+                self._load_json_tree(json_data, filepath)
+                
+        except Exception as e:
+            logger.error(f"Error loading JSON file: {e}")
+            raise
+    
+    def _has_nested_structure(self, df):
+        """Check if DataFrame contains nested structures that would be better in tree view"""
+        for column in df.columns:
+            sample_values = df[column].dropna().head(5)
+            for value in sample_values:
+                if isinstance(value, (dict, list)) or (isinstance(value, str) and (value.startswith('{') or value.startswith('['))):
+                    return True
+        return False
+    
+    def _load_json_tree(self, json_data, filepath):
+        """Load JSON data into tree view"""
+        # Store JSON data for export
+        self._current_json_data = json_data
+        
+        # Clear any previous data model
+        self.model.setData(pd.DataFrame())
+        self.data_loader = None
+        
+        # Clear and populate tree
+        self.json_tree.clear()
+        self._populate_json_tree(self.json_tree, json_data, "root")
+        
+        # Expand first level
+        for i in range(min(10, self.json_tree.topLevelItemCount())):
+            item = self.json_tree.topLevelItem(i)
+            if item:
+                item.setExpanded(True)
+        
+        # Switch to tree view
+        self.content_stack.setCurrentWidget(self.json_tree)
+        self.set_ui_for_content_type('json')
+        
+        # Update info label
+        item_count = self._count_json_items(json_data)
+        file_size = os.path.getsize(filepath)
+        file_size_kb = file_size / 1024
+        
+        self.info_label.setText(f"JSON: {item_count} items | Size: {file_size_kb:.1f} KB")
+        
+        logger.info(f"Successfully loaded JSON tree view: {item_count} items")
+    
+    def _populate_json_tree(self, parent, data, key=None):
+        """Recursively populate tree with JSON data"""
+        if isinstance(data, dict):
+            if key is not None:
+                item = QTreeWidgetItem(parent, [str(key), f"{{{len(data)} items}}", "Object"])
+                item.setExpanded(False)
+            else:
+                item = parent
+            
+            for k, v in data.items():
+                self._populate_json_tree(item, v, k)
+                
+        elif isinstance(data, list):
+            if key is not None:
+                item = QTreeWidgetItem(parent, [str(key), f"[{len(data)} items]", "Array"])
+                item.setExpanded(False)
+            else:
+                item = parent
+            
+            for i, v in enumerate(data):
+                self._populate_json_tree(item, v, f"[{i}]")
+                
+        else:
+            # Leaf node
+            value_str = str(data)
+            if len(value_str) > 100:
+                value_str = value_str[:100] + "..."
+            
+            data_type = type(data).__name__
+            if data is None:
+                data_type = "null"
+                value_str = "null"
+            
+            QTreeWidgetItem(parent, [str(key) if key else "", value_str, data_type])
+    
+    def _count_json_items(self, data):
+        """Count total items in JSON structure"""
+        if isinstance(data, dict):
+            return len(data) + sum(self._count_json_items(v) for v in data.values())
+        elif isinstance(data, list):
+            return len(data) + sum(self._count_json_items(item) for item in data)
+        else:
+            return 1
 
     def set_dataframe(self, df):
         """Set the DataFrame to display"""
@@ -2409,6 +2542,8 @@ class DataViewerTab(QWidget):
                 self.export_plot()
             elif self.current_content_type == 'text':
                 self.export_text()
+            elif self.current_content_type == 'json':
+                self.export_json()
             else:
                 QMessageBox.information(self, "Export", "No content to export.")
         except Exception as e:
@@ -2656,6 +2791,30 @@ class DataViewerTab(QWidget):
             except Exception as e:
                 QMessageBox.critical(self, "Export Failed", f"Failed to export text: {str(e)}")
                 logger.error(f"Text export failed: {e}")
+    
+    def export_json(self):
+        """Export the currently displayed JSON tree as JSON file"""
+        # We need to store the original JSON data to export it
+        if not hasattr(self, '_current_json_data') or self._current_json_data is None:
+            QMessageBox.warning(self, "Export", "No JSON data to export.")
+            return
+
+        file_dialog = QFileDialog()
+        file_dialog.setAcceptMode(QFileDialog.AcceptSave)
+        file_dialog.setNameFilter("JSON Files (*.json);;All Files (*)")
+        file_dialog.setDefaultSuffix("json")
+
+        if file_dialog.exec() == QFileDialog.Accepted:
+            export_path = file_dialog.selectedFiles()[0]
+            try:
+                import json
+                with open(export_path, 'w', encoding='utf-8') as f:
+                    json.dump(self._current_json_data, f, indent=2, ensure_ascii=False)
+                QMessageBox.information(self, "Export Complete", f"JSON exported successfully to: {export_path}")
+                logger.info(f"JSON content exported to: {export_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Export Failed", f"Failed to export JSON: {str(e)}")
+                logger.error(f"JSON export failed: {e}")
 
     def show_context_menu(self, position):
         """Show context menu for table (only for data content)"""
@@ -2802,18 +2961,16 @@ class DataViewerTab(QWidget):
             logger.debug("Creating processing dialog...")
             dialog = ProcessingDialog(df, self, input_file_path=self.current_file, project_manager=self.project_manager)
             
-            # Connect layer creation signal to forward to main application
+            # Connect signals
             dialog.layer_created.connect(self.layer_created.emit)
             
-            # Connect plot generation signal to create new plot tab - find parent DataViewer
-            parent_viewer = self.parent()
-            while parent_viewer and not isinstance(parent_viewer, DataViewer):
-                parent_viewer = parent_viewer.parent()
-            if parent_viewer:
+            # Connect plot generation to parent viewer
+            parent_viewer = self.parent().parent() # Get DataViewer instance
+            if hasattr(parent_viewer, 'add_plot_tab'):
                 dialog.plot_generated.connect(parent_viewer.add_plot_tab)
-            
+
             logger.debug("Showing processing dialog...")
-            
+                
             result = dialog.exec()
             logger.debug(f"Dialog result: {result}")
             
