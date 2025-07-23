@@ -103,10 +103,20 @@ class ProjectManager(QObject):
                 self.current_file_path = file_path
                 self._is_dirty = False
                 
-                # Initialize history logger
-                project_root = os.path.dirname(file_path)
+                # Initialize history logger with correct working directory (FIXED)
+                if self.current_project and self.current_project.working_directory:
+                    project_root = str(self.current_project.working_directory)
+                else:
+                    # Fallback to .uxo file directory if no working directory is set
+                    project_root = os.path.dirname(file_path)
+                    logger.warning("No working directory found, using .uxo file location for history logger")
+                
                 self.history_logger = ProjectHistoryLogger(project_root)
-                self.history_logger.log_event('project.loaded', {})
+                self.history_logger.log_event('project.loaded', {
+                    'project_name': self.current_project.name if self.current_project else 'Unknown',
+                    'file_path': file_path,
+                    'working_directory': project_root
+                })
 
                 # Restore to layer manager
                 self._restore_project_to_layer_manager(project)
@@ -419,12 +429,19 @@ class ProjectManager(QObject):
             self.restore_map_visual_state(project.map_state)
     
     def _save_uxo_file(self, file_path: str, project: UXOProject) -> bool:
-        """Save project to .uxo ZIP file"""
+        """Save project to .uxo ZIP file with enhanced structure"""
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_path = Path(temp_dir)
                 
-                # 1. Save metadata
+                # 1. Create manifest for file integrity
+                manifest = {
+                    "format_version": "2.0",
+                    "created": datetime.now().isoformat(),
+                    "files": {}
+                }
+                
+                # 2. Save metadata
                 metadata = UXOProjectMetadata(
                     name=project.name,
                     version=project.version,
@@ -436,17 +453,166 @@ class ProjectManager(QObject):
                 
                 with open(temp_path / "metadata.json", 'w') as f:
                     json.dump(metadata.to_dict(), f, indent=2)
+                manifest["files"]["metadata.json"] = "project metadata"
                 
-                # 2. Save individual layers
+                # 3. Save individual layers (NEW: Parquet + JSON metadata)
                 layers_dir = temp_path / "layers"
                 layers_dir.mkdir()
                 
-                for i, layer in enumerate(project.layers):
-                    layer_file = layers_dir / f"layer_{i:03d}.pkl"
-                    with open(layer_file, 'wb') as f:
-                        pickle.dump(layer, f)
+                # Create layer registry for tracking
+                layer_registry = {
+                    "format_version": "2.0",
+                    "layers": []
+                }
                 
-                # 3. Save map state
+                for i, layer in enumerate(project.layers):
+                    layer_id = f"layer_{i:03d}"
+                    
+                    # Save layer data as Parquet (replacing pickle)
+                    try:
+                        if hasattr(layer, 'data') and layer.data is not None:
+                            import pandas as pd
+                            logger.debug(f"Saving layer {layer_id} data: {type(layer.data)}")
+                            if isinstance(layer.data, pd.DataFrame):
+                                data_file = layers_dir / f"{layer_id}_data.parquet"
+                                logger.debug(f"Saving DataFrame with shape {layer.data.shape} to {data_file}")
+                                layer.data.to_parquet(data_file)
+                                has_data = True
+                            else:
+                                # For non-DataFrame data, still use pickle as fallback
+                                data_file = layers_dir / f"{layer_id}_data.pkl"
+                                logger.debug(f"Saving non-DataFrame data as pickle to {data_file}")
+                                with open(data_file, 'wb') as f:
+                                    pickle.dump(layer.data, f)
+                                has_data = True
+                        else:
+                            logger.debug(f"Layer {layer_id} has no data to save")
+                            has_data = False
+                    except Exception as e:
+                        logger.warning(f"Could not save layer data for {layer_id}, using pickle fallback: {e}")
+                        data_file = layers_dir / f"{layer_id}_data.pkl"
+                        with open(data_file, 'wb') as f:
+                            pickle.dump(layer.data if hasattr(layer, 'data') else None, f)
+                        has_data = True
+                    
+                    # Save layer metadata as JSON (handle enum serialization)
+                    layer_type = getattr(layer, 'layer_type', 'unknown')
+                    geometry_type = getattr(layer, 'geometry_type', 'unknown')
+                    
+                    # Convert enums to strings for JSON serialization
+                    layer_type_str = layer_type.value if hasattr(layer_type, 'value') else str(layer_type)
+                    geometry_type_str = geometry_type.value if hasattr(geometry_type, 'value') else str(geometry_type)
+                    
+                    # Handle style serialization safely
+                    style_obj = getattr(layer, 'style', {})
+                    if hasattr(style_obj, '__dict__'):
+                        style_dict = {}
+                        for key, value in style_obj.__dict__.items():
+                            # Convert any enum values in style to strings
+                            if hasattr(value, 'value'):
+                                style_dict[key] = value.value
+                            else:
+                                style_dict[key] = value
+                    else:
+                        style_dict = style_obj if isinstance(style_obj, dict) else {}
+                    
+                    layer_metadata = {
+                        "layer_id": layer_id,
+                        "name": getattr(layer, 'name', f'Layer {i}'),
+                        "layer_type": layer_type_str,
+                        "geometry_type": geometry_type_str,
+                        "created": getattr(layer, 'created', datetime.now()).isoformat() if hasattr(layer, 'created') else datetime.now().isoformat(),
+                        "data_file": data_file.name if has_data else None,
+                        "has_data": has_data,
+                        "style": style_dict,
+                        "source_info": getattr(layer, 'source_info', {}),
+                        "metadata": getattr(layer, 'metadata', {}),
+                        # Visual state (also saved in map_state.json but kept here for consistency)
+                        "is_visible": getattr(layer, 'is_visible', True),
+                        "opacity": getattr(layer, 'opacity', 1.0),
+                        "z_index": getattr(layer, 'z_index', 0),
+                        # Display and traceability info
+                        "display_name": getattr(layer, 'display_name', None),
+                        "processing_run_id": getattr(layer, 'processing_run_id', None),
+                        # Coordinate system info
+                        "crs": getattr(layer, 'crs', "EPSG:4326"),
+                        "bounds": getattr(layer, 'bounds', None),
+                        # Processing lineage
+                        "parent_layer": getattr(layer, 'parent_layer', None),
+                        "processing_history": getattr(layer, 'processing_history', []),
+                        "source_script": getattr(layer, 'source_script', None)
+                    }
+                    
+                    metadata_file = layers_dir / f"{layer_id}.json"
+                    with open(metadata_file, 'w') as f:
+                        json.dump(layer_metadata, f, indent=2)
+                    
+                    # Add to registry
+                    layer_registry["layers"].append({
+                        "layer_id": layer_id,
+                        "metadata_file": metadata_file.name,
+                        "data_file": data_file.name if has_data else None,
+                        "checksum": "placeholder"  # Could add actual checksums later
+                    })
+                
+                # Save layer registry
+                with open(layers_dir / "layer_registry.json", 'w') as f:
+                    json.dump(layer_registry, f, indent=2)
+                manifest["files"]["layers/layer_registry.json"] = "layer registry"
+                
+                # 4. Save unified logging system (NEW)
+                logs_dir = temp_path / "logs"
+                logs_dir.mkdir()
+                
+                # Copy current history.jsonl if it exists
+                if self.history_logger and project.working_directory:
+                    history_file = Path(project.working_directory) / '_project' / 'logs' / 'history.jsonl'
+                    if history_file.exists():
+                        import shutil
+                        shutil.copy2(history_file, logs_dir / "history.jsonl")
+                        manifest["files"]["logs/history.jsonl"] = "complete event log"
+                
+                # Enhanced processing history with more metadata
+                processing_runs = {
+                    "format_version": "2.0",
+                    "runs": []
+                }
+                
+                for step in project.processing_history:
+                    run_data = {
+                        "run_id": f"proc_{len(processing_runs['runs']):03d}",
+                        "timestamp": step.timestamp.isoformat(),
+                        "operation": step.operation,
+                        "parameters": step.parameters,
+                        "input_layers": step.input_layers,
+                        "output_layers": step.output_layers,
+                        "success": step.success,
+                        "error_message": step.error_message,
+                        "metadata": getattr(step, 'metadata', {})
+                    }
+                    processing_runs["runs"].append(run_data)
+                
+                with open(logs_dir / "processing_runs.json", 'w') as f:
+                    json.dump(processing_runs, f, indent=2)
+                manifest["files"]["logs/processing_runs.json"] = "enhanced processing metadata"
+                
+                # 5. Save annotations system (NEW)
+                annotations_dir = temp_path / "annotations"
+                annotations_dir.mkdir()
+                
+                # For now, create empty annotation files - can be enhanced later
+                empty_annotations = {
+                    "spatial_annotations.json": {"format_version": "2.0", "annotations": []},
+                    "user_notes.json": {"format_version": "2.0", "notes": []},
+                    "interpretations.json": {"format_version": "2.0", "interpretations": []}
+                }
+                
+                for filename, content in empty_annotations.items():
+                    with open(annotations_dir / filename, 'w') as f:
+                        json.dump(content, f, indent=2)
+                    manifest["files"][f"annotations/{filename}"] = "annotation system"
+                
+                # 6. Save map state
                 map_state_dict = {
                     "center_lat": project.map_state.center_lat,
                     "center_lon": project.map_state.center_lon,
@@ -469,23 +635,7 @@ class ProjectManager(QObject):
                 with open(temp_path / "map_state.json", 'w') as f:
                     json.dump(map_state_dict, f, indent=2)
                 
-                # 4. Save processing history
-                processing_history = []
-                for step in project.processing_history:
-                    processing_history.append({
-                        "timestamp": step.timestamp.isoformat(),
-                        "operation": step.operation,
-                        "parameters": step.parameters,
-                        "input_layers": step.input_layers,
-                        "output_layers": step.output_layers,
-                        "success": step.success,
-                        "error_message": step.error_message
-                    })
-                
-                with open(temp_path / "processing_history.json", 'w') as f:
-                    json.dump(processing_history, f, indent=2)
-                
-                # 5. Save data viewer state
+                # 7. Save data viewer state
                 data_viewer_state = {
                     "open_tabs": [],
                     "active_tab_index": project.data_viewer_state.active_tab_index,
@@ -503,8 +653,9 @@ class ProjectManager(QObject):
                 
                 with open(temp_path / "data_viewer_state.json", 'w') as f:
                     json.dump(data_viewer_state, f, indent=2)
+                manifest["files"]["data_viewer_state.json"] = "data viewer state"
                 
-                # 6. Save project structure
+                # 8. Save project structure
                 project_structure = {
                     "name": project.name,
                     "description": project.description,
@@ -516,17 +667,33 @@ class ProjectManager(QObject):
                 
                 with open(temp_path / "project.json", 'w') as f:
                     json.dump(project_structure, f, indent=2)
+                manifest["files"]["project.json"] = "project structure"
                 
-                # 7. Create ZIP file
-                with zipfile.ZipFile(file_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    for file_path_temp in temp_path.rglob('*'):
-                        if file_path_temp.is_file():
-                            arcname = file_path_temp.relative_to(temp_path)
-                            zf.write(file_path_temp, arcname)
+                # 9. Save manifest (final step)
+                with open(temp_path / "manifest.json", 'w') as f:
+                    json.dump(manifest, f, indent=2)
                 
-                # 8. Calculate file size
+                # 10. Create ZIP file atomically (use temp file first)
+                temp_zip_path = file_path + '.tmp'
+                try:
+                    with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        for file_path_temp in temp_path.rglob('*'):
+                            if file_path_temp.is_file():
+                                arcname = file_path_temp.relative_to(temp_path)
+                                zf.write(file_path_temp, arcname)
+                    
+                    # Atomic move - only replace original if save was successful
+                    os.replace(temp_zip_path, file_path)
+                    
+                except Exception as e:
+                    # Clean up temp file if it exists
+                    if os.path.exists(temp_zip_path):
+                        os.remove(temp_zip_path)
+                    raise e
+                
+                # 11. Calculate file size and log
                 file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-                logger.info(f"Project saved as {file_size_mb:.2f} MB file")
+                logger.info(f"Enhanced project saved as {file_size_mb:.2f} MB file (format v2.0)")
                 
                 return True
                 
@@ -537,7 +704,7 @@ class ProjectManager(QObject):
             return False
     
     def _load_uxo_file(self, file_path: str) -> Optional[UXOProject]:
-        """Load project from .uxo ZIP file"""
+        """Load project from .uxo ZIP file (supports both v1.0 and v2.0 formats)"""
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_path = Path(temp_dir)
@@ -545,6 +712,14 @@ class ProjectManager(QObject):
                 # Extract ZIP file
                 with zipfile.ZipFile(file_path, 'r') as zf:
                     zf.extractall(temp_path)
+                
+                # Check format version
+                format_version = "1.0"  # Default to old format
+                if (temp_path / "manifest.json").exists():
+                    with open(temp_path / "manifest.json", 'r') as f:
+                        manifest = json.load(f)
+                        format_version = manifest.get("format_version", "1.0")
+                        logger.info(f"Loading UXO project format v{format_version}")
                 
                 # Load project structure
                 with open(temp_path / "project.json", 'r') as f:
@@ -575,18 +750,144 @@ class ProjectManager(QObject):
                     layer_visual_states=layer_visual_states
                 )
                 
-                # Load layers
+                # Load layers (handle both old and new formats)
                 layers = []
                 layers_dir = temp_path / "layers"
                 if layers_dir.exists():
-                    for layer_file in sorted(layers_dir.glob("layer_*.pkl")):
-                        with open(layer_file, 'rb') as f:
-                            layer = pickle.load(f)
+                    if format_version == "2.0" and (layers_dir / "layer_registry.json").exists():
+                        # New format: Load from registry
+                        with open(layers_dir / "layer_registry.json", 'r') as f:
+                            layer_registry = json.load(f)
+                        
+                        for layer_info in layer_registry.get("layers", []):
+                            layer_id = layer_info["layer_id"]
+                            
+                            # Load layer metadata
+                            metadata_file = layers_dir / layer_info["metadata_file"]
+                            with open(metadata_file, 'r') as f:
+                                layer_metadata = json.load(f)
+                            
+                            # Load layer data
+                            layer_data = None
+                            if layer_info.get("data_file") and layer_metadata.get("has_data"):
+                                data_file = layers_dir / layer_info["data_file"]
+                                logger.debug(f"Loading layer data from: {data_file}")
+                                if data_file.exists():
+                                    try:
+                                        if data_file.suffix == '.parquet':
+                                            import pandas as pd
+                                            layer_data = pd.read_parquet(data_file)
+                                            logger.debug(f"Loaded Parquet data with shape: {layer_data.shape if hasattr(layer_data, 'shape') else 'unknown'}")
+                                        else:  # Fallback to pickle
+                                            with open(data_file, 'rb') as f:
+                                                layer_data = pickle.load(f)
+                                            logger.debug(f"Loaded pickle data: {type(layer_data)}")
+                                    except Exception as e:
+                                        logger.error(f"Could not load layer data for {layer_id}: {e}")
+                                        layer_data = None
+                                else:
+                                    logger.warning(f"Layer data file does not exist: {data_file}")
+                            else:
+                                logger.debug(f"No data file for layer {layer_id}: data_file={layer_info.get('data_file')}, has_data={layer_metadata.get('has_data')}")
+                            
+                            # Reconstruct layer object (this creates the same UXOLayer objects as before)
+                            from ..ui.map.layer_types import UXOLayer, LayerStyle, LayerType, GeometryType, LayerSource
+                            
+                            # Reconstruct enums from string values safely
+                            layer_type_str = layer_metadata.get("layer_type", "unknown")
+                            geometry_type_str = layer_metadata.get("geometry_type", "point")
+                            
+                            try:
+                                layer_type_enum = LayerType(layer_type_str)
+                            except (ValueError, TypeError):
+                                logger.warning(f"Unknown layer type '{layer_type_str}', defaulting to POINTS")
+                                layer_type_enum = LayerType.POINTS  # Use POINTS as default
+                            
+                            try:
+                                geometry_type_enum = GeometryType(geometry_type_str)
+                            except (ValueError, TypeError):
+                                logger.warning(f"Unknown geometry type '{geometry_type_str}', defaulting to POINT")
+                                geometry_type_enum = GeometryType.POINT  # This exists
+                            
+                            # Reconstruct style object safely
+                            style_data = layer_metadata.get("style", {})
+                            try:
+                                if style_data:
+                                    layer_style = LayerStyle(**style_data)
+                                else:
+                                    layer_style = LayerStyle()
+                            except (TypeError, ValueError) as e:
+                                logger.warning(f"Could not reconstruct layer style for {layer_id}: {e}, using default")
+                                layer_style = LayerStyle()
+                            
+                            # Create UXOLayer object with all preserved state
+                            layer = UXOLayer(
+                                name=layer_metadata.get("name", f"Layer {layer_id}"),
+                                layer_type=layer_type_enum,
+                                geometry_type=geometry_type_enum,
+                                data=layer_data,
+                                style=layer_style,
+                                metadata=layer_metadata.get("metadata", {}),  # Required parameter
+                                source=LayerSource.IMPORT,
+                                # Visual state
+                                is_visible=layer_metadata.get("is_visible", True),
+                                opacity=layer_metadata.get("opacity", 1.0),
+                                z_index=layer_metadata.get("z_index", 0),
+                                # Display and traceability info
+                                display_name=layer_metadata.get("display_name"),
+                                processing_run_id=layer_metadata.get("processing_run_id"),
+                                # Coordinate system info
+                                crs=layer_metadata.get("crs", "EPSG:4326"),
+                                bounds=layer_metadata.get("bounds"),
+                                # Processing lineage
+                                parent_layer=layer_metadata.get("parent_layer"),
+                                processing_history=layer_metadata.get("processing_history", []),
+                                source_script=layer_metadata.get("source_script")
+                            )
+                            
+                            # Debug logging for created layer
+                            logger.debug(f"Created layer '{layer.name}' with data: {type(layer.data) if layer.data is not None else 'None'}")
+                            if hasattr(layer.data, 'shape'):
+                                logger.debug(f"Layer data shape: {layer.data.shape}")
+                            elif layer.data is not None:
+                                logger.debug(f"Layer data length: {len(layer.data) if hasattr(layer.data, '__len__') else 'unknown'}")
+                            
+                            # Debug logging for layer state
+                            logger.debug(f"Layer state - visible: {layer.is_visible}, opacity: {layer.opacity}, z_index: {layer.z_index}")
+                            if layer.processing_run_id:
+                                logger.debug(f"Layer processing run ID: {layer.processing_run_id}")
+                            if layer.parent_layer:
+                                logger.debug(f"Layer parent: {layer.parent_layer}")
+                            
                             layers.append(layer)
+                            
+                    else:
+                        # Old format: Load pickled layers
+                        for layer_file in sorted(layers_dir.glob("layer_*.pkl")):
+                            with open(layer_file, 'rb') as f:
+                                layer = pickle.load(f)
+                                layers.append(layer)
                 
-                # Load processing history
+                # Load processing history (handle both formats)
                 processing_history = []
-                if (temp_path / "processing_history.json").exists():
+                if format_version == "2.0" and (temp_path / "logs" / "processing_runs.json").exists():
+                    # New format: Enhanced processing runs
+                    with open(temp_path / "logs" / "processing_runs.json", 'r') as f:
+                        runs_data = json.load(f)
+                        for run_data in runs_data.get("runs", []):
+                            step = ProcessingStep(
+                                timestamp=datetime.fromisoformat(run_data["timestamp"]),
+                                operation=run_data["operation"],
+                                parameters=run_data["parameters"],
+                                input_layers=run_data["input_layers"],
+                                output_layers=run_data["output_layers"],
+                                success=run_data["success"],
+                                error_message=run_data.get("error_message"),
+                                metadata=run_data.get("metadata", {})
+                            )
+                            processing_history.append(step)
+                elif (temp_path / "processing_history.json").exists():
+                    # Old format: Legacy processing history
                     with open(temp_path / "processing_history.json", 'r') as f:
                         history_data = json.load(f)
                         for step_data in history_data:
@@ -651,6 +952,22 @@ class ProjectManager(QObject):
                     processing_history=processing_history
                 )
                 
+                # NEW: Restore history.jsonl to working directory if it exists in the .uxo file
+                if format_version == "2.0" and project.working_directory and (temp_path / "logs" / "history.jsonl").exists():
+                    working_logs_dir = Path(project.working_directory) / '_project' / 'logs'
+                    working_logs_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    history_source = temp_path / "logs" / "history.jsonl"
+                    history_dest = working_logs_dir / "history.jsonl"
+                    
+                    try:
+                        import shutil
+                        shutil.copy2(history_source, history_dest)
+                        logger.info(f"Restored project history log to {history_dest}")
+                    except Exception as e:
+                        logger.warning(f"Could not restore history log: {e}")
+                
+                logger.info(f"Successfully loaded UXO project (format v{format_version}) with {len(layers)} layers")
                 return project
                 
         except Exception as e:
