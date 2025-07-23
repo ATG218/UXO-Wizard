@@ -55,7 +55,8 @@ class ProjectManager(QObject):
         
         self.current_project = project
         self.current_file_path = None
-        self._is_dirty = True
+        # Only mark as dirty for truly new projects
+        self._is_dirty = is_new
         
         # Initialize history logger
         project_root = working_directory or self._current_working_directory
@@ -64,8 +65,7 @@ class ProjectManager(QObject):
             # Only log 'project.created' for truly new projects
             if is_new:
                 self.history_logger.log_event('project.created', {
-                    'project_name': name,
-                    'schema_version': '1.0.0'
+                    'project_name': name
                 })
                 logger.info(f"Created new project: {name}")
             else:
