@@ -46,16 +46,28 @@ class ProjectValidator:
             
             # Check required files
             required_files = ['metadata.json', 'project.json', 'map_state.json']
-            optional_files = ['data_viewer_state.json', 'processing_history.json']
             
             for required_file in required_files:
                 if required_file not in file_list:
                     errors.append(f"Missing required file: {required_file}")
             
-            # Check optional files (warn but don't fail validation)
-            for optional_file in optional_files:
-                if optional_file not in file_list:
-                    logger.debug(f"Optional file missing: {optional_file} (project may be from older version)")
+            # Check optional files (different files for different format versions)
+            optional_v1_files = ['data_viewer_state.json', 'processing_history.json']
+            optional_v2_files = ['data_viewer_state.json', 'logs/processing_runs.json', 'manifest.json']
+            
+            # Determine format version based on presence of manifest
+            is_v2_format = 'manifest.json' in file_list
+            
+            if is_v2_format:
+                logger.debug("Detected UXO format v2.0")
+                for optional_file in optional_v2_files:
+                    if optional_file not in file_list:
+                        logger.debug(f"Optional file missing: {optional_file} (v2.0 format)")
+            else:
+                logger.debug("Detected UXO format v1.0")
+                for optional_file in optional_v1_files:
+                    if optional_file not in file_list:
+                        logger.debug(f"Optional file missing: {optional_file} (v1.0 format)")
             
             # Validate file contents
             with zipfile.ZipFile(file_path, 'r') as zf:
@@ -83,10 +95,18 @@ class ProjectValidator:
                 except Exception as e:
                     errors.append(f"Error reading map_state.json: {str(e)}")
                 
-                # Check layers directory
-                layer_files = [f for f in file_list if f.startswith('layers/') and f.endswith('.pkl')]
-                if not layer_files:
-                    errors.append("No layer files found in layers/ directory")
+                # Check layers directory (support both old and new formats)
+                layer_pkl_files = [f for f in file_list if f.startswith('layers/') and f.endswith('.pkl')]
+                layer_json_files = [f for f in file_list if f.startswith('layers/') and f.endswith('.json') and not f.endswith('layer_registry.json')]
+                layer_registry = [f for f in file_list if f == 'layers/layer_registry.json']
+                
+                # Old format: has .pkl files
+                # New format: has layer_registry.json and .json metadata files
+                has_old_format = len(layer_pkl_files) > 0
+                has_new_format = len(layer_registry) > 0 and len(layer_json_files) > 0
+                
+                if not has_old_format and not has_new_format:
+                    errors.append("No layer files found in layers/ directory (neither old .pkl nor new registry format)")
             
             return len(errors) == 0, errors
             
