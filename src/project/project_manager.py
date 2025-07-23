@@ -43,7 +43,11 @@ class ProjectManager(QObject):
         self._data_viewer = None  # Reference to data viewer widget
         
     def create_new_project(self, name: str, working_directory: str = None) -> UXOProject:
-        """Create a new empty project"""
+        """Create a new empty project (logs 'project.created' event)"""
+        return self._create_project_for_directory(name=name, working_directory=working_directory, is_new=True)
+    
+    def _create_project_for_directory(self, name: str, working_directory: str = None, is_new: bool = False) -> UXOProject:
+        """Internal method to create project object for a directory"""
         project = UXOProject(
             name=name,
             working_directory=Path(working_directory) if working_directory else None
@@ -57,13 +61,17 @@ class ProjectManager(QObject):
         project_root = working_directory or self._current_working_directory
         if project_root:
             self.history_logger = ProjectHistoryLogger(project_root)
-            self.history_logger.log_event('project.created', {
-                'project_name': name,
-                'schema_version': '1.0.0'
-            })
+            # Only log 'project.created' for truly new projects
+            if is_new:
+                self.history_logger.log_event('project.created', {
+                    'project_name': name,
+                    'schema_version': '1.0.0'
+                })
+                logger.info(f"Created new project: {name}")
+            else:
+                logger.info(f"Opened existing project directory: {name}")
 
         self.project_created.emit(name)
-        logger.info(f"Created new project: {name}")
         return project
     
     def save_project(self, file_path: str) -> bool:
@@ -167,8 +175,15 @@ class ProjectManager(QObject):
         """Get current file path"""
         return self.current_file_path
     
-    def set_current_working_directory(self, working_directory: str):
+    def set_current_working_directory(self, working_directory: Optional[str]):
         """Set the current working directory and initialize a project if none exists."""
+        # Handle None or empty working directory gracefully
+        if not working_directory:
+            logger.debug("set_current_working_directory called with None/empty directory, closing current project")
+            self.close_project()
+            self._current_working_directory = None
+            return
+            
         if self.current_project and self.current_project.working_directory == Path(working_directory):
             return # Avoid re-initializing the same project
 
@@ -179,10 +194,15 @@ class ProjectManager(QObject):
 
         # Ensure _project directory structure exists
         project_internal_dir = os.path.join(working_directory, '_project')
-        os.makedirs(project_internal_dir, exist_ok=True)
+        logs_dir = os.path.join(project_internal_dir, 'logs')
+        history_file = os.path.join(logs_dir, 'history.jsonl')
         
-        # Create a new project object for the opened folder
-        self.create_new_project(name=project_name, working_directory=working_directory)
+        # Check if this is a truly new project (no history file exists)
+        is_new_project = not os.path.exists(history_file)
+        os.makedirs(logs_dir, exist_ok=True)
+        
+        # Create a project object for the opened folder
+        self._create_project_for_directory(name=project_name, working_directory=working_directory, is_new=is_new_project)
         
         logger.debug(f"Current working directory set to: {working_directory}")
     
@@ -952,20 +972,47 @@ class ProjectManager(QObject):
                     processing_history=processing_history
                 )
                 
-                # NEW: Restore history.jsonl to working directory if it exists in the .uxo file
-                if format_version == "2.0" and project.working_directory and (temp_path / "logs" / "history.jsonl").exists():
-                    working_logs_dir = Path(project.working_directory) / '_project' / 'logs'
-                    working_logs_dir.mkdir(parents=True, exist_ok=True)
+                # NEW: Handle working directory accessibility and project relocation
+                if format_version == "2.0" and project.working_directory:
+                    original_working_dir = str(project.working_directory)
                     
-                    history_source = temp_path / "logs" / "history.jsonl"
-                    history_dest = working_logs_dir / "history.jsonl"
-                    
-                    try:
-                        import shutil
-                        shutil.copy2(history_source, history_dest)
-                        logger.info(f"Restored project history log to {history_dest}")
-                    except Exception as e:
-                        logger.warning(f"Could not restore history log: {e}")
+                    # Check if the original working directory is accessible on this machine
+                    if not self._check_working_directory_accessible(original_working_dir):
+                        logger.warning(f"Original working directory not accessible: {original_working_dir}")
+                        
+                        # Show relocation dialog to user
+                        try:
+                            from ..ui.dialogs import ProjectRelocationDialog
+                            from PySide6.QtWidgets import QDialog
+                            dialog = ProjectRelocationDialog(original_working_dir, project.name)
+                            
+                            dialog_result = dialog.exec()
+                            logger.debug(f"Dialog result: {dialog_result}, QDialog.Accepted: {QDialog.Accepted}")
+                            
+                            if dialog_result == QDialog.Accepted:
+                                new_working_dir = dialog.get_selected_path()
+                                if new_working_dir and self._relocate_project_directory(project, new_working_dir, temp_path):
+                                    logger.info(f"Project successfully relocated from {original_working_dir} to {new_working_dir}")
+                                else:
+                                    logger.error("Failed to relocate project")
+                                    project.working_directory = None
+                            else:
+                                logger.info("User cancelled project relocation")
+                                project.working_directory = None
+                        except Exception as e:
+                            logger.error(f"Error during project relocation dialog: {e}")
+                            project.working_directory = None
+                    else:
+                        # Original directory is accessible, restore history normally
+                        history_source = temp_path / "logs" / "history.jsonl"
+                        if history_source.exists():
+                            working_logs_dir = Path(project.working_directory) / '_project' / 'logs'
+                            working_logs_dir.mkdir(parents=True, exist_ok=True)
+                            history_dest = working_logs_dir / "history.jsonl"
+                            
+                            import shutil
+                            shutil.copy2(history_source, history_dest)
+                            logger.info(f"Restored project history log to {history_dest}")
                 
                 logger.info(f"Successfully loaded UXO project (format v{format_version}) with {len(layers)} layers")
                 return project
@@ -1013,4 +1060,56 @@ class ProjectManager(QObject):
             
         except Exception as e:
             logger.error(f"Error exporting project info: {e}")
+            return False
+    
+    def _check_working_directory_accessible(self, working_directory: str) -> bool:
+        """Check if a working directory path is accessible on the current machine"""
+        if not working_directory:
+            return False
+            
+        try:
+            path = Path(working_directory)
+            # Check if parent directories exist and are accessible
+            if not path.parent.exists():
+                return False
+            
+            # Try to create the directory structure
+            test_dir = path / '_project' / 'logs'
+            test_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Test write permissions
+            test_file = test_dir / '.test_write'
+            test_file.touch()
+            test_file.unlink()
+            
+            return True
+            
+        except (PermissionError, FileNotFoundError, OSError):
+            return False
+    
+    def _relocate_project_directory(self, project: UXOProject, new_working_directory: str, temp_path: Path) -> bool:
+        """Relocate project to a new working directory and restore files"""
+        try:
+            new_path = Path(new_working_directory)
+            
+            # Create the new project directory structure
+            new_logs_dir = new_path / '_project' / 'logs'
+            new_logs_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Restore history.jsonl to new location if it exists in the .uxo file
+            history_source = temp_path / "logs" / "history.jsonl"
+            if history_source.exists():
+                history_dest = new_logs_dir / "history.jsonl"
+                import shutil
+                shutil.copy2(history_source, history_dest)
+                logger.info(f"Restored project history to new location: {history_dest}")
+            
+            # Update the project's working directory
+            project.working_directory = new_path
+            
+            logger.info(f"Successfully relocated project to: {new_working_directory}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to relocate project to {new_working_directory}: {e}")
             return False 
