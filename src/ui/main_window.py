@@ -74,10 +74,7 @@ class MainWindow(QMainWindow):
         # File Menu
         file_menu = menubar.addMenu("&File")
         
-        self.new_project_action = QAction("&New Project", self)
-        self.new_project_action.setShortcut(QKeySequence.New)
-        self.new_project_action.triggered.connect(self.new_project)
-        file_menu.addAction(self.new_project_action)
+        # New Project action removed
         
         self.open_project_action = QAction("&Open Project", self)
         self.open_project_action.setShortcut(QKeySequence.Open)
@@ -205,7 +202,7 @@ class MainWindow(QMainWindow):
         main_toolbar.setObjectName("MainToolBar")
         
         # Essential project actions
-        main_toolbar.addAction(self.new_project_action)
+        # New Project action removed from toolbar
         main_toolbar.addAction(self.open_project_action)
         main_toolbar.addSeparator()
         main_toolbar.addAction(self.save_project_action)
@@ -510,12 +507,7 @@ class MainWindow(QMainWindow):
         # Open the script in the main tabbed viewing area
         self.open_file(script_path)
         
-    def new_project(self):
-        """Create a new project"""
-        logger.info("Creating new project")
-        # TODO: Implement project creation dialog
-        self.status_label.setText("New project created")
-        
+    # new_project method removed - not needed
     def open_project(self):
         """Open an existing project folder"""
         # QFileDialog already imported at top

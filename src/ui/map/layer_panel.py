@@ -1293,8 +1293,23 @@ class ModernLayerControlPanel(QWidget):
         # Use getattr for backward compatibility with older layers
         processing_run_id = getattr(layer, 'processing_run_id', None)
         source_script = getattr(layer, 'source_script', None)
+        
+        # Extract input/output files from metadata if available
         input_files = getattr(layer, 'source_input_files', [])
         output_files = getattr(layer, 'generated_output_files', [])
+        
+        # Also check in metadata for file info (enhanced format)
+        if hasattr(layer, 'metadata') and isinstance(layer.metadata, dict):
+            processing_metadata = layer.metadata.get('processing_metadata', {})
+            file_info = processing_metadata.get('file_info', {})
+            
+            # Extract input file
+            if not input_files and file_info.get('input_file'):
+                input_files = [file_info['input_file']]
+                
+            # Extract output file
+            if not output_files and file_info.get('output_file'):
+                output_files = [file_info['output_file']]
         
         metadata_info.append(f"Processing Run ID: {processing_run_id or 'None'}")
         metadata_info.append(f"Source Script: {source_script or 'None'}")
