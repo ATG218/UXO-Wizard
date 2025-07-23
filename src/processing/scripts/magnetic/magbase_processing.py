@@ -221,7 +221,7 @@ class MagbaseProcessing(ScriptInterface):
             disable_basestation = process_opts.get('disable_basestation', {}).get('value', False)
             
             # Create result
-            result = ProcessingResult(success=True)
+            result = ProcessingResult(success=True, processing_script=self.name)
             
             # Step 1: Data validation and preparation
             if progress_callback:
@@ -362,6 +362,7 @@ class MagbaseProcessing(ScriptInterface):
             logging.error(f"Magbase processing failed: {str(e)}")
             return ProcessingResult(
                 success=False,
+                processing_script=self.name,
                 error_message=f"Magbase processing failed: {str(e)}"
             )
     

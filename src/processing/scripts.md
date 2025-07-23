@@ -45,7 +45,8 @@ The current framework has been enhanced with several key features:
 - **Background Processing**: Scripts run in separate threads to prevent UI freezing
 - **Progress Reporting**: Real-time progress updates during processing
 - **Error Handling**: Comprehensive error reporting and graceful failure handling
-- **Metadata Generation**: Automatic JSON sidecar files with processing information
+- **Smart Output Management**: Avoids redundant file creation for scripts that handle their own outputs
+- **Integrated Metadata**: Processing metadata is embedded directly into results instead of separate JSON files
 
 #### **Layer System Integration**
 - **Automatic Layer Creation**: Processing outputs automatically become map layers
@@ -1545,4 +1546,377 @@ result.metadata.update({
 })
 ```
 
-By following these practices, you'll create robust, maintainable, and well-integrated processing scripts that provide excellent user experience and reliable results in the UXO Wizard framework.
+## 8. Smart Output Management System
+
+The UXO Wizard framework includes an intelligent output management system that prevents redundant file creation and optimizes the processing pipeline for different types of scripts.
+
+### 8.1 Pipeline Output Behavior
+
+#### **Default Pipeline Behavior**
+By default, the processing pipeline automatically:
+1. **Creates CSV/Excel files** from the `result.data` DataFrame
+2. **Generates JSON metadata files** with processing information
+3. **Saves all outputs** to `processed/{processor_type}/` directory
+
+#### **Smart Output Detection**
+The pipeline now intelligently detects when scripts handle their own file output and avoids creating redundant files. This prevents issues like:
+- Duplicate CSV files in wrong locations
+- Unnecessary JSON sidecar files when metadata is integrated
+- File organization conflicts between pipeline and script outputs
+
+### 8.2 Scripts That Handle Their Own Output
+
+Some scripts create their own comprehensive output files and directories. The framework automatically detects these scripts and skips redundant pipeline file generation.
+
+#### **Current Self-Managing Scripts**
+- **`flight_path_segmenter`**: Creates its own CSV files in dedicated subdirectories
+- **Advanced processing scripts**: Scripts that generate multiple related output files
+
+#### **How Detection Works**
+```python
+# In ProcessingPipeline._script_handles_own_output()
+def _script_handles_own_output(self, result: ProcessingResult) -> bool:
+    """Check if the processing script handles its own output files"""
+    scripts_with_own_output = [
+        'flight_path_segmenter',
+        # Add other scripts here that handle their own output
+    ]
+    
+    script_name = result.processing_script or ''
+    return script_name in scripts_with_own_output
+```
+
+### 8.3 Creating Self-Managing Scripts
+
+If your script creates comprehensive output files, you can design it to be self-managing:
+
+#### **Script Design Pattern**
+```python
+class ComprehensiveProcessor(ScriptInterface):
+    @property
+    def name(self) -> str:
+        return "comprehensive_processor"  # This name determines self-management
+    
+    def execute(self, data, params, progress_callback=None, input_file_path=None):
+        # Create your own output directory
+        output_dir = self._create_output_directory(input_file_path)
+        
+        # Generate multiple related files
+        self._save_processed_data(data, output_dir)
+        self._save_analysis_report(analysis_results, output_dir)
+        self._save_visualizations(figures, output_dir)
+        
+        # Create result WITHOUT setting result.data to avoid pipeline CSV creation
+        result = ProcessingResult(
+            success=True,
+            data=None,  # Set to None to prevent pipeline CSV generation
+            processing_script=self.name,
+            metadata={
+                'processor': 'magnetic',
+                'output_directory': str(output_dir),
+                'files_created': len(output_files),
+                # Include all metadata directly - no separate JSON needed
+                'processing_info': {
+                    'timestamp': datetime.now().isoformat(),
+                    'processing_time': processing_time
+                }
+            }
+        )
+        
+        # Register output files for tracking
+        for file_path in output_files:
+            result.add_output_file(
+                file_path=str(file_path),
+                file_type=file_path.suffix[1:],
+                description=f"Processed output: {file_path.name}"
+            )
+        
+        return result
+```
+
+#### **Directory Structure for Self-Managing Scripts**
+```
+project_directory/
+├── processed/
+│   ├── magnetic/
+│   │   ├── dataset1_comprehensive/        # Self-managed directory
+│   │   │   ├── data_primary.csv
+│   │   │   ├── data_secondary.csv
+│   │   │   ├── analysis_report.txt
+│   │   │   └── visualizations.png
+│   │   ├── dataset2_basic_processing.csv  # Pipeline-managed file
+│   │   └── dataset2_basic_processing.png  # Pipeline-managed file
+```
+
+### 8.4 Integration Guidelines
+
+#### **For Self-Managing Scripts**
+1. **Set `result.data = None`** to prevent pipeline CSV creation
+2. **Include comprehensive metadata** in `result.metadata` instead of relying on separate JSON files
+3. **Register all output files** using `result.add_output_file()`
+4. **Create organized directory structures** for related outputs
+5. **Add script name to the self-managing list** in the pipeline
+
+#### **For Standard Scripts**
+1. **Return processed data** in `result.data` for automatic CSV generation
+2. **Let the pipeline handle** file naming and directory creation
+3. **Focus on processing logic** rather than file management
+4. **Use the integrated metadata system** for processing information
+
+### 8.5 Metadata Integration
+
+The framework now integrates processing metadata directly into the `ProcessingResult.metadata` instead of creating separate JSON files.
+
+#### **Automatic Metadata Integration**
+```python
+# The pipeline automatically adds this metadata to your result:
+result.metadata.update({
+    'processing_info': {
+        'processor_type': 'magnetic',
+        'processing_script': 'your_script_name',
+        'processing_time': 2.34,
+        'timestamp': '2025-01-15T14:30:22',
+        'success': True
+    },
+    'file_info': {
+        'input_file': '/path/to/input.csv',
+        'output_file': '/path/to/output.csv',
+        'export_format': 'csv',
+        'data_shape': [1000, 15]
+    }
+})
+```
+
+#### **Accessing Integrated Metadata**
+Your script can access and extend this integrated metadata:
+```python
+def execute(self, data, params, progress_callback=None, input_file_path=None):
+    result = ProcessingResult(success=True, data=processed_data)
+    
+    # The pipeline will automatically add processing_info and file_info
+    # You can add your own metadata alongside:
+    result.metadata.update({
+        'processor': 'magnetic',
+        'algorithm': 'minimum_curvature',
+        'parameters_used': params,
+        'quality_metrics': {
+            'data_coverage': 0.95,
+            'interpolation_error': 2.1
+        }
+    })
+    
+    return result
+```
+
+### 8.6 Best Practices for Output Management
+
+#### **Choose the Right Approach**
+- **Use pipeline management** for simple scripts that produce a single processed dataset
+- **Use self-management** for complex scripts that create multiple related files or need specific directory structures
+
+#### **Avoid Common Issues**
+- **Don't create redundant files**: Let either the pipeline OR your script handle file creation, not both
+- **Don't create separate JSON files**: Use the integrated metadata system instead
+- **Don't hardcode output paths**: Use the project's `processed/` directory structure
+
+#### **Performance Considerations**
+- **Self-managing scripts** reduce pipeline overhead by avoiding redundant file operations
+- **Integrated metadata** eliminates the need for separate JSON file I/O
+- **Smart detection** prevents unnecessary processing steps
+
+By following these guidelines, your scripts will integrate seamlessly with the UXO Wizard framework's intelligent output management system, providing better performance and cleaner file organization.
+
+## 9. Script Output Control Flag
+
+The UXO Wizard framework includes a flag-based system to control whether scripts handle their own output files or rely on the processing pipeline for automatic file generation.
+
+### 9.1 The `handles_own_output` Property
+
+Scripts can now declare whether they manage their own output files by implementing the `handles_own_output` property:
+
+```python
+class MyScript(ScriptInterface):
+    @property
+    def handles_own_output(self) -> bool:
+        """Whether this script creates its own output files and doesn't need pipeline CSV generation
+        
+        Returns:
+            True if script handles its own output files (default: False)
+        """
+        return True  # or False
+```
+
+### 9.2 How the Flag Works
+
+#### **Default Behavior (handles_own_output = False)**
+When a script returns `False` (the default), the processing pipeline will:
+1. **Automatically create CSV/Excel files** from `result.data`
+2. **Generate JSON metadata files** with processing information
+3. **Save outputs** to `processed/{processor_type}/` with standard naming
+
+#### **Self-Managing Behavior (handles_own_output = True)**
+When a script returns `True`, the processing pipeline will:
+1. **Skip automatic file generation** to prevent duplicates
+2. **Trust the script** to create its own output files
+3. **Only handle layer creation and UI updates**
+
+### 9.3 Implementation Examples
+
+#### **Standard Script (Pipeline-Managed)**
+```python
+class BasicProcessor(ScriptInterface):
+    @property
+    def handles_own_output(self) -> bool:
+        return False  # Let pipeline handle file creation
+    
+    def execute(self, data, params, progress_callback=None, input_file_path=None):
+        # Process data
+        processed_data = data.copy()
+        processed_data['new_column'] = processed_data['old_column'] * 2
+        
+        # Return data - pipeline will create CSV automatically
+        return ProcessingResult(
+            success=True,
+            data=processed_data,  # Pipeline creates CSV from this
+            processing_script=self.name,
+            metadata={'processor': 'magnetic'}
+        )
+```
+
+#### **Self-Managing Script (Script-Managed)**
+```python
+class FlightPathSegmenter(ScriptInterface):
+    @property
+    def handles_own_output(self) -> bool:
+        return True  # Script creates its own files
+    
+    def execute(self, data, params, progress_callback=None, input_file_path=None):
+        # Create output directory
+        output_dir = self._create_output_directory(input_file_path)
+        
+        # Process and segment data
+        segments = self._segment_flight_paths(data)
+        
+        # Save multiple CSV files in organized subdirectory
+        saved_files = []
+        for segment_name, segment_data in segments.items():
+            file_path = output_dir / f"{segment_name}.csv"
+            segment_data.to_csv(file_path, index=False)
+            saved_files.append(file_path)
+        
+        # Return result with file references - no automatic CSV creation
+        result = ProcessingResult(
+            success=True,
+            data=data,  # Original data for layer creation
+            processing_script=self.name,
+            metadata={'processor': 'magnetic'}
+        )
+        
+        # Register the files we created
+        for file_path in saved_files:
+            result.add_output_file(
+                file_path=str(file_path),
+                file_type="csv",
+                description=f"Segmented flight data: {file_path.stem}"
+            )
+        
+        return result
+```
+
+### 9.4 Pipeline Detection Logic
+
+The processing pipeline automatically detects the flag and adjusts behavior:
+
+```python
+# In ProcessingPipeline class
+def _script_handles_own_output(self) -> bool:
+    """Check if the processing script handles its own output files"""
+    if hasattr(self.current_script, 'handles_own_output'):
+        return self.current_script.handles_own_output
+    return False  # Default to pipeline-managed
+
+# Used in processing logic
+if result.data is not None and not self._script_handles_own_output():
+    # Only create automatic CSV if script doesn't handle its own output
+    output_path = self._generate_output_file(result)
+    result.output_file_path = output_path
+```
+
+### 9.5 When to Use Each Approach
+
+#### **Use `handles_own_output = False` (Default) When:**
+- Script produces a single processed dataset
+- Standard CSV/Excel output is sufficient
+- Simple file naming is acceptable
+- You want automatic file management
+
+#### **Use `handles_own_output = True` When:**
+- Script creates multiple related output files
+- Custom directory structure is needed
+- Specialized file formats are required
+- Script needs complete control over file organization
+
+### 9.6 Migration from Legacy System
+
+The flag-based system replaces the previous hardcoded script name list approach:
+
+#### **Old System (Deprecated)**
+```python
+# Old approach - hardcoded script names
+def _script_handles_own_output(self, result: ProcessingResult) -> bool:
+    scripts_with_own_output = [
+        'flight_path_segmenter',
+        'Flight Path Segmenter',  # Had to include multiple variations
+        # Maintenance nightmare as new scripts were added
+    ]
+    script_name = result.processing_script or ''
+    return script_name in scripts_with_own_output
+```
+
+#### **New System (Current)**
+```python
+# New approach - script declares its own behavior
+def _script_handles_own_output(self) -> bool:
+    if hasattr(self.current_script, 'handles_own_output'):
+        return self.current_script.handles_own_output
+    return False
+```
+
+### 9.7 Benefits of the Flag System
+
+#### **For Developers**
+- **Self-Documenting**: Scripts declare their own behavior
+- **No Central Maintenance**: No need to update pipeline lists
+- **Type Safety**: Property-based approach with clear return type
+- **Flexibility**: Each script controls its own output strategy
+
+#### **For Framework**
+- **Cleaner Code**: Eliminates hardcoded script name lists
+- **Better Maintainability**: Changes isolated to individual scripts
+- **Consistent Behavior**: Clear contract between scripts and pipeline
+- **Future-Proof**: Easy to extend with additional flags
+
+### 9.8 Best Practices
+
+#### **Always Override the Property**
+Even if using the default behavior, explicitly declare it for clarity:
+```python
+@property
+def handles_own_output(self) -> bool:
+    """This script uses pipeline-managed output"""
+    return False
+```
+
+#### **Document Your Choice**
+Include a comment explaining why the script handles or doesn't handle its own output:
+```python
+@property
+def handles_own_output(self) -> bool:
+    """This script creates segmented CSV files in organized subdirectories"""
+    return True
+```
+
+#### **Consider User Experience**
+Scripts that handle their own output should create well-organized, clearly named files that users can easily understand and navigate.
+
+This flag-based system provides a clean, maintainable way for scripts to declare their output management preferences, eliminating the need for manual pipeline configuration and reducing maintenance overhead.

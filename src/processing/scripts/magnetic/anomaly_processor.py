@@ -281,13 +281,12 @@ class MagneticAnomalyProcessor(ScriptInterface):
         return report_path
 
     def execute(self, data: pd.DataFrame, params: Dict[str, Any], progress_callback: Optional[Callable] = None, input_file_path: Optional[str] = None) -> ProcessingResult:
-        processing_result = ProcessingResult(success=True)
+        processing_result = ProcessingResult(success=True, processing_script=self.name)
         try:
             if progress_callback: progress_callback(0, "Initializing...")
             
             # Set up traceability metadata
             input_files = [input_file_path] if input_file_path else []
-            self.set_current_files(input_files)
             
             analysis_type = params.get('analysis_options', {}).get('analysis_type', {}).get('value', 'all_methods')
             grid_value_col = params.get('input_data', {}).get('grid_value_column', {}).get('value', 'value')

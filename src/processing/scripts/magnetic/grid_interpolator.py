@@ -41,7 +41,8 @@ class GridInterpolator(ScriptInterface):
     Grid interpolation script for magnetic survey data processing
     """
     
-    def __init__(self):
+    def __init__(self, project_manager=None):
+        super().__init__(project_manager)
         # Initialize a helper processor instance for access to BaseProcessor methods
         self._base_processor = _GridInterpolatorHelper()
     
@@ -52,6 +53,11 @@ class GridInterpolator(ScriptInterface):
     @property  
     def description(self) -> str:
         return "Perform 2D grid interpolation of magnetic survey data using minimum curvature method with soft constraints to eliminate flight line artifacts"
+    
+    @property
+    def handles_own_output(self) -> bool:
+        """This script creates its own output files (grid CSV, diagnostic plots, analysis directory)"""
+        return True
     
     def get_parameters(self) -> Dict[str, Any]:
         """Return parameter structure for grid interpolation"""
@@ -883,7 +889,7 @@ Processing Information:
         """
         
         # Create result object
-        result = ProcessingResult(success=True)
+        result = ProcessingResult(success=True, processing_script=self.name)
         
         try:
             # Validate input data

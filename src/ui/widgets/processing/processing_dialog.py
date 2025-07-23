@@ -21,6 +21,7 @@ class ProcessingDialog(QDialog):
     # Signals
     layer_created = Signal(object)  # UXOLayer created during processing
     plot_generated = Signal(Figure, str) # Figure, title
+    processing_complete = Signal(ProcessingResult)  # Emitted when processing completes
 
     def __init__(self, data: pd.DataFrame, parent=None, input_file_path: Optional[str] = None, project_manager=None):
         super().__init__(parent)
@@ -60,6 +61,10 @@ class ProcessingDialog(QDialog):
     def on_processing_complete(self, result: ProcessingResult):
         """Handle processing completion"""
         self.result = result
+        
+        # Emit signal for external listeners (e.g., history viewer refresh)
+        self.processing_complete.emit(result)
+        
         if result.success:
             # Change Close button to OK
             self.button_box.clear()

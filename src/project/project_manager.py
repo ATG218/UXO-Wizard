@@ -16,6 +16,7 @@ from PySide6.QtCore import QObject, Signal
 from loguru import logger
 
 from .project_schema import UXOProject, UXOProjectMetadata, MapState, ProcessingStep, DataViewerState, DataViewerTabState, LayerVisualState
+from .project_history import ProjectHistoryLogger
 from ..ui.map.layer_manager import LayerManager
 from ..ui.map.layer_types import UXOLayer
 
@@ -28,6 +29,7 @@ class ProjectManager(QObject):
     project_loaded = Signal(str)  # file_path
     project_error = Signal(str, str)  # operation, error_message
     project_created = Signal(str)  # project_name
+    project_closed = Signal()
     working_directory_restored = Signal(str)  # working_directory_path
     
     def __init__(self, layer_manager: LayerManager):
@@ -35,6 +37,7 @@ class ProjectManager(QObject):
         self.layer_manager = layer_manager
         self.current_project: Optional[UXOProject] = None
         self.current_file_path: Optional[str] = None
+        self.history_logger: Optional[ProjectHistoryLogger] = None
         self._is_dirty = False  # Track unsaved changes
         self._current_working_directory: Optional[str] = None  # Track current working directory
         self._data_viewer = None  # Reference to data viewer widget
@@ -50,6 +53,15 @@ class ProjectManager(QObject):
         self.current_file_path = None
         self._is_dirty = True
         
+        # Initialize history logger
+        project_root = working_directory or self._current_working_directory
+        if project_root:
+            self.history_logger = ProjectHistoryLogger(project_root)
+            self.history_logger.log_event('project.created', {
+                'project_name': name,
+                'schema_version': '1.0.0'
+            })
+
         self.project_created.emit(name)
         logger.info(f"Created new project: {name}")
         return project
@@ -91,6 +103,11 @@ class ProjectManager(QObject):
                 self.current_file_path = file_path
                 self._is_dirty = False
                 
+                # Initialize history logger
+                project_root = os.path.dirname(file_path)
+                self.history_logger = ProjectHistoryLogger(project_root)
+                self.history_logger.log_event('project.loaded', {})
+
                 # Restore to layer manager
                 self._restore_project_to_layer_manager(project)
                 
@@ -108,7 +125,20 @@ class ProjectManager(QObject):
     def save_project_as(self, file_path: str) -> bool:
         """Save project with new file path"""
         return self.save_project(file_path)
-    
+
+    def close_project(self):
+        """Close the current project and release resources."""
+        if self.history_logger:
+            self.history_logger.close()
+            self.history_logger = None
+        
+        self.current_project = None
+        self.current_file_path = None
+        self._is_dirty = False
+        self.layer_manager.clear_all()
+        self.project_closed.emit()
+        logger.info("Project closed.")
+
     def is_dirty(self) -> bool:
         """Check if project has unsaved changes"""
         return self._is_dirty
@@ -128,11 +158,22 @@ class ProjectManager(QObject):
         return self.current_file_path
     
     def set_current_working_directory(self, working_directory: str):
-        """Set the current working directory"""
+        """Set the current working directory and initialize a project if none exists."""
+        if self.current_project and self.current_project.working_directory == Path(working_directory):
+            return # Avoid re-initializing the same project
+
+        self.close_project() # Close any existing project first
+
         self._current_working_directory = working_directory
-        if self.current_project:
-            self.current_project.working_directory = Path(working_directory) if working_directory else None
-            self.mark_dirty()
+        project_name = os.path.basename(working_directory)
+
+        # Ensure _project directory structure exists
+        project_internal_dir = os.path.join(working_directory, '_project')
+        os.makedirs(project_internal_dir, exist_ok=True)
+        
+        # Create a new project object for the opened folder
+        self.create_new_project(name=project_name, working_directory=working_directory)
+        
         logger.debug(f"Current working directory set to: {working_directory}")
     
     def get_current_working_directory(self) -> Optional[str]:

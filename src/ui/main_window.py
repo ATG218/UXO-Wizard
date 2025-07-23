@@ -18,6 +18,7 @@ from loguru import logger
 from .widgets.project_explorer import ProjectExplorer
 from .widgets.console_widget import ConsoleWidget
 from .widgets.data_viewer import DataViewer
+from .widgets.project_history_viewer import ProjectHistoryViewer
 from .themes import ThemeManager
 
 
@@ -261,6 +262,13 @@ class MainWindow(QMainWindow):
         self.console_dock.setWidget(self.console_widget)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.console_dock)
 
+        # Project History Dock (right side, tabify with console)
+        self.history_dock = QDockWidget("Project History", self)
+        self.history_dock.setObjectName("ProjectHistoryDock")
+        self.history_viewer = ProjectHistoryViewer(self.project_manager)
+        self.history_dock.setWidget(self.history_viewer)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.history_dock)
+
         #Map Dock (right side, tabify with console)
         self.map_dock = QDockWidget("Map", self)
         self.map_dock.setObjectName("AdvancedMapDock")
@@ -288,6 +296,7 @@ class MainWindow(QMainWindow):
         
         # Tabify Console and Map together (right side)
         self.tabifyDockWidget(self.console_dock, self.map_dock)
+        self.tabifyDockWidget(self.map_dock, self.history_dock)
         self.map_dock.raise_()  # Map on top by default
         
     def apply_default_layout(self):
@@ -431,12 +440,17 @@ class MainWindow(QMainWindow):
         # Lab widget connections
         self.lab_widget.file_selected.connect(self.open_file)
         self.lab_widget.script_executed.connect(self.run_processing_script)
+        self.lab_widget.processing_complete.connect(lambda result: self.history_viewer.load_history())
         
         # Project manager connections
         self.project_manager.project_saved.connect(self.on_project_saved)
         self.project_manager.project_loaded.connect(self.on_project_loaded)
+        self.project_manager.project_loaded.connect(self.history_viewer.load_history)
+        self.project_manager.project_created.connect(self.history_viewer.load_history)
+        self.project_manager.project_closed.connect(self.history_viewer.clear_history)
         self.project_manager.project_error.connect(self.on_project_error)
         self.project_manager.working_directory_restored.connect(self.on_working_directory_restored)
+        self.project_manager.working_directory_restored.connect(self.history_viewer.load_history)
         
         # Layer manager connections to mark project as dirty
         self.map_widget.layer_manager.layer_added.connect(lambda: self.project_manager.mark_dirty())

@@ -27,6 +27,7 @@ class LabWidget(QWidget):
     script_executed = Signal(str)  # script_path
     layer_created = Signal(object)  # Emits UXOLayer for map integration
     plot_generated = Signal(object, str)  # Figure, title - for opening plots in data viewer
+    processing_complete = Signal(object)  # ProcessingResult - emitted when processing completes
     
     def __init__(self, project_root: str = None, project_manager=None):
         super().__init__()
@@ -665,9 +666,6 @@ class LabWidget(QWidget):
                 run_action = menu.addAction("▶️ Execute Script")
                 run_action.triggered.connect(lambda: self.script_executed.emit(file_path))
                 
-            if file_path.endswith(('.csv', '.txt', '.dat', '.json')):
-                view_action = menu.addAction("📋 Quick View Data")
-                view_action.triggered.connect(lambda: self.file_selected.emit(file_path))
                 
             menu.addSeparator()
             
@@ -999,6 +997,8 @@ class LabWidget(QWidget):
         dialog.layer_created.connect(self.layer_created.emit)
         # Forward plot generation signals to enable data viewer integration  
         dialog.plot_generated.connect(self.plot_generated.emit)
+        # Forward processing completion signals for history viewer refresh
+        dialog.processing_complete.connect(self.processing_complete.emit)
         
         if dialog.exec() == QDialog.Accepted:
             result = dialog.get_result()
