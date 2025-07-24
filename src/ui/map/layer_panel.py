@@ -694,6 +694,10 @@ class LayerItemWidget(QWidget):
                     background-color: #bd2130;
                 }
             """)
+        
+        # Force a repaint to ensure the stylesheet change takes effect
+        self.visibility_icon.update()
+        self.visibility_icon.repaint()
             
     def _toggle_visibility(self):
         """Toggle layer visibility"""
@@ -1111,7 +1115,23 @@ class ModernLayerControlPanel(QWidget):
         """Handle style change"""
         if layer_name in self.layer_widgets:
             widget = self.layer_widgets[layer_name]
-            widget.setup_ui()  # Refresh the widget
+            # Update widget's layer reference to ensure it has the latest state
+            fresh_layer = self.layer_manager.get_layer(layer_name)
+            if fresh_layer:
+                widget.layer = fresh_layer
+            
+            # Instead of recreating the entire UI, just update the parts that matter
+            # Update layer details (which might have changed)
+            if hasattr(widget, 'details_label'):
+                details = widget._get_layer_details()
+                widget.details_label.setText(details)
+            
+            # Update opacity display
+            if hasattr(widget, 'update_opacity_display'):
+                widget.update_opacity_display()
+            
+            # Most importantly, update the visibility icon
+            widget._update_visibility_icon()
 
     def _on_display_name_changed(self, layer_name: str, new_display_name: str):
         """Handle display name changes from the manager."""

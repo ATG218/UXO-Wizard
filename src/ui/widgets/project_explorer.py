@@ -8,13 +8,41 @@ from PySide6.QtWidgets import (
     QStackedWidget, QLabel, QPushButton,
     QInputDialog, QMessageBox, QFormLayout, QDialog, QDialogButtonBox
 )
-from PySide6.QtCore import Qt, Signal, QDir, QModelIndex, QSettings, QFileInfo, QItemSelectionModel
+from PySide6.QtCore import Qt, Signal, QDir, QModelIndex, QSettings, QFileInfo, QItemSelectionModel, QSortFilterProxyModel
 from PySide6.QtGui import QIcon, QAction, QFont
 from loguru import logger
 import os
 import shutil
 import pandas as pd
 from .processing.processing_dialog import ProcessingDialog
+
+
+class ProjectExplorerProxyModel(QSortFilterProxyModel):
+    """Proxy model that filters out internal project directories"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.hidden_dirs = {'_project'}  # Directories to hide
+    
+    def filterAcceptsRow(self, source_row, source_parent):
+        """Override to filter out hidden directories"""
+        # Get the source model
+        source_model = self.sourceModel()
+        if not source_model:
+            return True
+            
+        # Get the index and file info for this row
+        index = source_model.index(source_row, 0, source_parent)
+        if not index.isValid():
+            return True
+            
+        file_info = source_model.fileInfo(index)
+        
+        # Hide _project directory
+        if file_info.isDir() and file_info.fileName() in self.hidden_dirs:
+            return False
+            
+        return True
 
 
 class ProjectWelcomeWidget(QWidget):
@@ -181,17 +209,21 @@ class ProjectExplorer(QWidget):
         self.tree_view.setAnimated(True)
         self.tree_view.setSortingEnabled(True)
         
-        # File system model
-        self.model = QFileSystemModel()
-        self.model.setRootPath(QDir.rootPath())
+        # File system model with proxy for filtering
+        self.source_model = QFileSystemModel()
+        self.source_model.setRootPath(QDir.rootPath())
         
         # Set filters for relevant file types
-        self.model.setNameFilters([
+        self.source_model.setNameFilters([
             "*.csv", "*.txt", "*.dat", "*.xlsx", "*.xls",
             "*.json", "*.geojson", "*.shp", "*.tif", "*.tiff",
             "*.png", "*.jpg", "*.jpeg", "*.uxo", "*.mplplot" # UXO project and plot files
         ])
-        self.model.setNameFilterDisables(False)  # Hide non-matching files
+        self.source_model.setNameFilterDisables(False)  # Hide non-matching files
+        
+        # Proxy model to filter out _project directory
+        self.model = ProjectExplorerProxyModel()
+        self.model.setSourceModel(self.source_model)
         
         self.tree_view.setModel(self.model)
         
@@ -246,8 +278,10 @@ class ProjectExplorer(QWidget):
         """Set the root path for the explorer"""
         if path and QDir(path).exists():
             self.current_project_path = path
-            index = self.model.index(path)
-            self.tree_view.setRootIndex(index)
+            # Get index from source model first, then map to proxy
+            source_index = self.source_model.index(path)
+            proxy_index = self.model.mapFromSource(source_index)
+            self.tree_view.setRootIndex(proxy_index)
             self.show_tree_view()  # Switch to tree view when project is opened
             self.project_changed.emit(path)
             
@@ -262,19 +296,23 @@ class ProjectExplorer(QWidget):
         """Get the currently selected file path"""
         indexes = self.tree_view.selectedIndexes()
         if indexes:
-            return self.model.filePath(indexes[0])
+            # Map proxy index back to source model to get file path
+            source_index = self.model.mapToSource(indexes[0])
+            return self.source_model.filePath(source_index)
         return None
         
     def handle_double_click(self, index: QModelIndex):
         """Handle double-click on file"""
-        if not self.model.isDir(index):
-            file_path = self.model.filePath(index)
+        source_index = self.model.mapToSource(index)
+        if not self.source_model.isDir(source_index):
+            file_path = self.source_model.filePath(source_index)
             self.file_selected.emit(file_path)
             logger.info(f"File double-clicked: {file_path}")
             
     def handle_click(self, index: QModelIndex):
         """Handle single click on item"""
-        file_path = self.model.filePath(index)
+        source_index = self.model.mapToSource(index)
+        file_path = self.source_model.filePath(source_index)
         logger.debug(f"Item clicked: {file_path}")
         
     def show_context_menu(self, position):
@@ -283,7 +321,8 @@ class ProjectExplorer(QWidget):
         if not clicked_index.isValid():
             self.clicked_path = self.current_project_path
         else:
-            self.clicked_path = self.model.filePath(clicked_index)
+            source_index = self.model.mapToSource(clicked_index)
+            self.clicked_path = self.source_model.filePath(source_index)
         
         indexes = self.tree_view.selectedIndexes()
         if not indexes and clicked_index.isValid():
@@ -297,8 +336,8 @@ class ProjectExplorer(QWidget):
         if not selected_indexes:
             return
         
-        selected_paths = [self.model.filePath(idx) for idx in selected_indexes]
-        is_dirs = [self.model.isDir(idx) for idx in selected_indexes]
+        selected_paths = [self.source_model.filePath(self.model.mapToSource(idx)) for idx in selected_indexes]
+        is_dirs = [self.source_model.isDir(self.model.mapToSource(idx)) for idx in selected_indexes]
         all_dirs = all(is_dirs)
         
         menu = QMenu()
@@ -365,10 +404,10 @@ class ProjectExplorer(QWidget):
     def refresh_view(self):
         """Refresh the file view"""
         if self.current_project_path:
-            # Force model to update
-            root = self.model.rootPath()
-            self.model.setRootPath("")
-            self.model.setRootPath(root)
+            # Force source model to update
+            root = self.source_model.rootPath()
+            self.source_model.setRootPath("")
+            self.source_model.setRootPath(root)
             logger.info("Project explorer refreshed")
         
     def collapse_all(self):
@@ -381,14 +420,14 @@ class ProjectExplorer(QWidget):
         
     def set_name_filters(self, filters):
         """Update the file name filters"""
-        self.model.setNameFilters(filters)
+        self.source_model.setNameFilters(filters)
         
     def show_hidden_files(self, show):
         """Toggle showing hidden files"""
         if show:
-            self.model.setFilter(self.model.filter() | QDir.Hidden)
+            self.source_model.setFilter(self.source_model.filter() | QDir.Hidden)
         else:
-            self.model.setFilter(self.model.filter() & ~QDir.Hidden) 
+            self.source_model.setFilter(self.source_model.filter() & ~QDir.Hidden) 
     
     def go_home(self):
         """Navigate to the home directory"""
@@ -414,7 +453,8 @@ class ProjectExplorer(QWidget):
         paths = set()
         for index in indexes:
             if index.column() == 0:
-                paths.add(self.model.filePath(index))
+                source_index = self.model.mapToSource(index)
+                paths.add(self.source_model.filePath(source_index))
         return list(paths)
     
     def create_new_folder(self):
