@@ -783,15 +783,11 @@ class UXOMapWidget(QWidget):
         try:
             layer_name_js = json.dumps(layer_name)
             if is_visible:
-                # If a layer is made visible, it might not have been created in JS yet
-                # (e.g., if it was added while a filter was active).
-                # The safest approach is to ensure it exists before trying to show it.
-                layer = self.layer_manager.get_layer(layer_name)
-                if layer:
-                    self._create_leaflet_layer(layer)
-                    self.map_widget.page.runJavaScript(f"showUxoLayer({layer_name_js});")
-                    logger.debug(f"Layer '{layer_name}' made visible")
-                    self.zoom_to_visible_layers()
+                # Simply show the layer - it should already exist in JS from when it was added
+                # Only recreate if absolutely necessary (this avoids the bug where layers won't hide after color changes)
+                self.map_widget.page.runJavaScript(f"showUxoLayer({layer_name_js});")
+                logger.debug(f"Layer '{layer_name}' made visible")
+                self.zoom_to_visible_layers()
             else:
                 self.map_widget.page.runJavaScript(f"hideUxoLayer({layer_name_js});")
                 logger.debug(f"Layer '{layer_name}' hidden from map")
@@ -811,6 +807,10 @@ class UXOMapWidget(QWidget):
             self._on_layer_added(layer)
             if was_visible:
                 self._on_layer_visibility_changed(layer_name, True)
+            
+            # Ensure the layer manager's visibility state is correct and emit signal to update UI
+            # This fixes the issue where the visibility button doesn't update after style changes
+            self.layer_manager.set_layer_visibility(layer_name, was_visible)
 
     def _on_layer_opacity_changed(self, layer_name: str, new_opacity: float):
         """Handle layer opacity change"""
