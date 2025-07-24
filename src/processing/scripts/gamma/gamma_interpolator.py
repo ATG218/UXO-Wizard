@@ -9,7 +9,7 @@ import matplotlib.colors as mcolors
 from pathlib import Path
 from loguru import logger
 
-from ...base import ScriptInterface, ProcessingResult, ProcessingError
+from ...base import ScriptInterface, ProcessingResult, ProcessingError, ScriptMetadata
 
 # Try to import Numba for JIT compilation
 try:
@@ -245,6 +245,15 @@ class GammaInterpolator(ScriptInterface):
                 },
             }
         }
+
+    def get_metadata(self) -> ScriptMetadata:
+        return ScriptMetadata(
+            description="Creates 2D interpolated grids from gamma survey data for multiple elements",
+            flags=["preprocessing", "visualization"],
+            typical_use_case="Converting gamma survey data to continuous grids for spectral analysis",
+            field_compatible=True,
+            estimated_runtime="<1 minute"
+        )
 
     def validate_data(self, data: pd.DataFrame) -> bool:
         required = ['lat', 'lon']

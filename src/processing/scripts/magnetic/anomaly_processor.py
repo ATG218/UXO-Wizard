@@ -25,7 +25,7 @@ from typing import Dict, Any, Optional, Callable
 import datetime
 import tempfile
 
-from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError
+from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError, ScriptMetadata
 from scipy.ndimage import gaussian_filter, maximum_filter
 from scipy.fft import fft2, ifft2, fftfreq
 from scipy.interpolate import griddata
@@ -59,6 +59,15 @@ class MagneticAnomalyProcessor(ScriptInterface):
             }
         }
 
+    def get_metadata(self) -> ScriptMetadata:
+        return ScriptMetadata(
+            description="Detects and highlights magnetic anomalies using statistical analysis",
+            flags=["analysis", "visualization"],
+            typical_use_case="Identifying potential targets after preprocessing and corrections - WIP",
+            field_compatible=False,
+            estimated_runtime="<1 minute"
+        )
+
     def validate_data(self, data: pd.DataFrame) -> bool:
         # Check for coordinate columns
         has_utm = 'UTM_Easting' in data.columns and 'UTM_Northing' in data.columns
@@ -73,18 +82,12 @@ class MagneticAnomalyProcessor(ScriptInterface):
         return True
 
     def _create_output_directory(self, input_file_path: Optional[str], working_directory: Optional[str] = None) -> Path:
-        """Create output directory in project/processed/magnetic/ following framework structure"""
-        
-        print(f"DEBUG: _create_output_directory called with:")
-        print(f"  input_file_path: {input_file_path}")
-        print(f"  working_directory: {working_directory}")
-        
+        """Create output directory in project/processed/magnetic/ following framework structure"""    
         # Always prefer working directory if provided
         if working_directory and working_directory.strip():
             project_dir = Path(working_directory)
             base_filename = Path(input_file_path).stem if input_file_path else "anomaly_analysis"
             output_dir = project_dir / "processed" / "magnetic" / f"{base_filename}_analysis_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            print(f"DEBUG: Using working directory - final output_dir: {output_dir}")
         elif input_file_path:
             # Fallback method: try to find project root from input file path
             input_path = Path(input_file_path)

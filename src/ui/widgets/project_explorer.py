@@ -15,6 +15,7 @@ import os
 import shutil
 import pandas as pd
 from .processing.processing_dialog import ProcessingDialog
+from .processing.processing_widget import ProcessingWidget
 
 
 class ProjectExplorerProxyModel(QSortFilterProxyModel):
@@ -352,6 +353,18 @@ class ProjectExplorer(QWidget):
             if len(selected_paths) != 1 or os.path.isdir(selected_paths[0]):
                 process_action.setEnabled(False)
             menu.addAction(process_action)
+            
+            # NEW: Add "Run Previous" option if available
+            last_used = ProcessingWidget.get_last_used_script()
+            
+            if last_used and len(selected_paths) == 1 and not os.path.isdir(selected_paths[0]):
+                script_name = last_used["script"]
+                processor_type = last_used["processor_type"].title()
+                
+                run_previous_action = QAction(f"Run Previous ({script_name})", self)
+                run_previous_action.triggered.connect(lambda: self.run_previous_processing(selected_paths[0]))
+                run_previous_action.setToolTip(f"Re-run {processor_type} processor with {script_name} using last parameters")
+                menu.addAction(run_previous_action)
             
             menu.addSeparator()
         
@@ -693,3 +706,62 @@ class ProjectExplorer(QWidget):
                 if result.output_file_path:
                     message += f"\nOutput saved to: {result.output_file_path}"
                 QMessageBox.information(self, "Success", message)
+    
+    def run_previous_processing(self, file_path):
+        """Run the last used processing script with saved parameters"""
+        last_used = ProcessingWidget.get_last_used_script()
+        if not last_used:
+            QMessageBox.warning(self, "No Previous Script", "No previous processing script found.")
+            return
+        
+        try:
+            # Load the data file
+            df = self.load_dataframe(file_path)
+            if df is None:
+                raise ValueError("Unsupported file type for processing")
+                
+            # Debug: Print data columns to understand what we have
+            logger.info(f"Loaded data columns: {list(df.columns)}")
+            logger.info(f"Data shape: {df.shape}")
+            logger.info(f"First few rows:\n{df.head()}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Failed to load file for processing: {str(e)}")
+            return
+        
+        try:
+            # Create processing dialog
+            dialog = ProcessingDialog(df, self, input_file_path=file_path, project_manager=self.project_manager)
+            
+            # Set up the processor and script from last used
+            processor_type = last_used["processor_type"]
+            script_name = last_used["script"] 
+            parameters = last_used["parameters"]
+            
+            logger.info(f"Running previous processing:")
+            logger.info(f"  Processor type: {processor_type}")
+            logger.info(f"  Script name: {script_name}")
+            logger.info(f"  Parameters keys: {list(parameters.keys()) if parameters else 'None'}")
+            
+            # Auto-configure the dialog
+            if not dialog.configure_from_previous(processor_type, script_name, parameters):
+                QMessageBox.critical(self, "Configuration Failed", "Failed to configure the processing dialog")
+                return
+            
+            # Forward layer creation and plot signals
+            dialog.layer_created.connect(self.layer_created.emit)
+            dialog.plot_generated.connect(self.plot_generated.emit)
+            
+            # Show the dialog instead of starting silently to allow user to see what's happening
+            if dialog.exec() == QDialog.Accepted:
+                result = dialog.get_result()
+                if result and result.success:
+                    message = "Processing completed successfully!"
+                    if result.output_file_path:
+                        message += f"\nOutput saved to: {result.output_file_path}"
+                    QMessageBox.information(self, "Success", message)
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to run previous processing: {str(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")

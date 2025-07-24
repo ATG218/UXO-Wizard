@@ -26,7 +26,7 @@ import tempfile
 import datetime
 import warnings
 
-from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError, NUMBA_AVAILABLE, jit, BaseProcessor
+from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError, ScriptMetadata, NUMBA_AVAILABLE, jit, BaseProcessor
 
 warnings.filterwarnings('ignore')
 
@@ -143,6 +143,15 @@ class GridInterpolator(ScriptInterface):
                 }
             }
         }
+    
+    def get_metadata(self) -> ScriptMetadata:
+        return ScriptMetadata(
+            description="Creates 2D interpolated grids from linear magnetic survey data",
+            flags=["preprocessing", "visualization"],
+            typical_use_case="Converting flight path data to continuous grids for analysis and visualization",
+            field_compatible=True,
+            estimated_runtime="<1 minute"
+        )
     
     def validate_data(self, data: pd.DataFrame) -> bool:
         """Validate input data for grid interpolation"""

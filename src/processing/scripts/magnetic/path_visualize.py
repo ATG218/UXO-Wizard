@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional, Callable
 from pathlib import Path
 from datetime import datetime
 
-from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError
+from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError, ScriptMetadata
 
 class PathVisualize(ScriptInterface):
     """
@@ -51,6 +51,15 @@ class PathVisualize(ScriptInterface):
                 }
             }
         }
+
+    def get_metadata(self) -> ScriptMetadata:
+        return ScriptMetadata(
+            description="Creates visual flight path plots and interactive maps for survey data",
+            flags=["visualization", "field-use", "qc"],
+            typical_use_case="Visualizing drone flight paths and data coverage for quality control",
+            field_compatible=True,
+            estimated_runtime="<5 seconds"
+        )
 
     def validate_data(self, data: pd.DataFrame) -> bool:
         """Validates that the necessary columns are present in the DataFrame."""

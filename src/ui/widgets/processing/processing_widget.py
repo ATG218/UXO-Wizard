@@ -11,14 +11,17 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import (
     Qt, Signal, QPropertyAnimation, QEasingCurve,
     QParallelAnimationGroup, QSequentialAnimationGroup,
-    QTimer, Property, QCoreApplication
+    QTimer, Property, QCoreApplication, QSettings
 )
 from PySide6.QtGui import QPalette, QFont
 import pandas as pd
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from loguru import logger
+import json
+from datetime import datetime
 
 from ....processing import ProcessingPipeline, ProcessingResult
+from ....processing.base import ScriptMetadata
 
 
 class AnimatedProgressBar(QProgressBar):
@@ -301,7 +304,7 @@ class ParameterWidget(QWidget):
             )
         elif isinstance(widget, QComboBox):
             widget.currentTextChanged.connect(
-                lambda val: self.value_changed.emit(category, param_name, val)
+                lambda val: self.value_changed.emit(category, param_name, widget.currentData() or val)
             )
         elif hasattr(widget, 'file_line_edit'):  # File widget
             widget.file_line_edit.textChanged.connect(
@@ -336,6 +339,9 @@ class ParameterWidget(QWidget):
 class ProcessingWidget(QWidget):
     """Main processing widget with processor selection and execution"""
     
+    # Class variable to track last used script across all instances
+    _session_last_used = {}  # {"magnetic": {"script": "path_visualize", "params": {...}}, ...}
+    
     # Signals
     processing_complete = Signal(ProcessingResult)
     layer_created = Signal(object)  # UXOLayer created during processing
@@ -349,6 +355,191 @@ class ProcessingWidget(QWidget):
         self.current_input_file: Optional[str] = None
         self.setup_ui()
         self.connect_signals()
+        
+    @classmethod
+    def set_last_used_script(cls, processor_type: str, script_name: str, parameters: dict):
+        """Track the last used script and parameters for this session"""
+        cls._session_last_used[processor_type] = {
+            "script": script_name,
+            "parameters": parameters.copy(),
+            "timestamp": datetime.now()
+        }
+
+    @classmethod  
+    def get_last_used_script(cls, processor_type: str = None):
+        """Get the most recently used script, optionally filtered by processor type"""
+        if processor_type:
+            return cls._session_last_used.get(processor_type)
+        
+        # Return most recent across all processor types
+        if not cls._session_last_used:
+            return None
+        
+        most_recent = None
+        latest_time = None
+        
+        for proc_type, info in cls._session_last_used.items():
+            if latest_time is None or info["timestamp"] > latest_time:
+                latest_time = info["timestamp"]
+                most_recent = {
+                    "processor_type": proc_type,
+                    **info
+                }
+        
+        return most_recent
+        
+    def _get_recent_scripts(self, processor_type: str) -> List[str]:
+        """Get recent scripts from QSettings"""
+        settings = QSettings("UXO-Wizard", "Desktop-Suite")
+        recent_json = settings.value(f"recent_scripts/{processor_type}", "[]")
+        try:
+            return json.loads(recent_json)
+        except:
+            return []
+
+    def _save_recent_script(self, processor_type: str, script_name: str):
+        """Save script to recent list (max 5 items)"""
+        settings = QSettings("UXO-Wizard", "Desktop-Suite")
+        recent = self._get_recent_scripts(processor_type)
+        
+        # Remove if already exists
+        if script_name in recent:
+            recent.remove(script_name)
+        
+        # Add to front
+        recent.insert(0, script_name)
+        
+        # Limit to 5 items
+        recent = recent[:5]
+        
+        # Save back to settings
+        settings.setValue(f"recent_scripts/{processor_type}", json.dumps(recent))
+
+    def _format_script_tooltip(self, metadata: ScriptMetadata) -> str:
+        """Format script metadata into a rich tooltip"""
+        flags_str = " • ".join([f"#{flag}" for flag in metadata.flags]) if metadata.flags else "No tags"
+        
+        tooltip_parts = [
+            f"<b>{metadata.description}</b>",
+            "",
+            f"<b>Tags:</b> {flags_str}",
+            f"<b>Runtime:</b> {metadata.estimated_runtime}",
+            f"<b>Field Compatible:</b> {'Yes' if metadata.field_compatible else 'No'}",
+            "",
+            f"<i>{metadata.typical_use_case}</i>"
+        ]
+        
+        return "<br>".join(tooltip_parts)
+        
+    def _enhance_script_dropdown(self, processor, set_default_selection=False):
+        """Enhance script dropdown with tooltips and recent prioritization"""
+        if not self.params_widget or not processor:
+            return
+            
+        # Set flag to prevent recursive parameter updates during enhancement
+        was_updating = getattr(self, '_updating_parameters', False)
+        self._updating_parameters = True
+            
+        # Find the script selection combo box in the parameter widget
+        script_combo = None
+        all_combos = self.params_widget.findChildren(QComboBox)
+        
+        for combo in all_combos:
+            # Check if this combo is for script selection by examining its parent hierarchy
+            parent = combo
+            found_script_selection = False
+            
+            # Walk up the parent hierarchy looking for script_selection group
+            for _ in range(10):  # Limit depth to prevent infinite loops
+                parent = parent.parent()
+                if not parent:
+                    break
+                # Check if parent is a QGroupBox with "Script Selection" in title
+                if hasattr(parent, 'title') and 'script' in parent.title().lower():
+                    found_script_selection = True
+                    break
+            
+            if found_script_selection:
+                script_combo = combo
+                break
+        
+        # Also try to find it by checking the combo box items
+        if not script_combo:
+            for combo in all_combos:
+                if combo.count() > 0:
+                    # Check if any items look like script names
+                    first_item = combo.itemText(0)
+                    if any(script_word in first_item.lower() for script_word in ['process', 'analyz', 'visual', 'grid', 'anomaly']):
+                        script_combo = combo
+                        break
+                
+        if not script_combo:
+            return
+            
+        # Get recent scripts for this processor type
+        recent_scripts = self._get_recent_scripts(processor.processor_type)
+        
+        # Get scripts with recent priority if the method exists
+        if hasattr(processor, 'get_scripts_with_recent_priority'):
+            scripts = processor.get_scripts_with_recent_priority(recent_scripts)
+        else:
+            # Fallback: get all scripts and manually prioritize recent ones
+            all_scripts = processor.get_available_scripts() if hasattr(processor, 'get_available_scripts') else {}
+            scripts = {}
+            
+            # Add recent scripts first
+            for script_name in recent_scripts:
+                if script_name in all_scripts:
+                    scripts[script_name] = all_scripts[script_name]
+            
+            # Add remaining scripts
+            for script_name, script_instance in all_scripts.items():
+                if script_name not in scripts:
+                    scripts[script_name] = script_instance
+        
+        # Store current selection before clearing
+        current_selection = script_combo.currentData() or script_combo.currentText()
+        
+        # Clear and repopulate combo box
+        script_combo.clear()
+        
+        recent_count = 0
+        for script_name, script_instance in scripts.items():
+            # Add script to dropdown (no star, just ordered by recency then alphabetical)
+            if script_name in recent_scripts:
+                recent_count += 1
+            
+            script_combo.addItem(script_name, script_name)
+            
+            # Get metadata and create rich tooltip if method exists
+            if hasattr(processor, 'get_script_metadata'):
+                metadata = processor.get_script_metadata(script_name)
+                if metadata:
+                    tooltip = self._format_script_tooltip(metadata)
+                    script_combo.setItemData(
+                        script_combo.count() - 1, 
+                        tooltip, 
+                        Qt.ToolTipRole
+                    )
+        
+        # Handle selection based on whether we're setting default or preserving user choice
+        if set_default_selection and script_combo.count() > 0:
+            # Set the first item (most recent script) as default when initially creating the widget
+            self._updating_parameters = was_updating
+            script_combo.setCurrentIndex(0)
+            self._updating_parameters = True
+        elif not set_default_selection and current_selection and script_combo.count() > 0:
+            # Restore the previous selection when just enhancing (not setting default)
+            for i in range(script_combo.count()):
+                if script_combo.itemData(i) == current_selection or script_combo.itemText(i) == current_selection:
+                    self._updating_parameters = was_updating
+                    script_combo.setCurrentIndex(i)
+                    self._updating_parameters = True
+                    break
+        
+        
+        # Restore the updating flag to its previous state
+        self._updating_parameters = was_updating
         
     def setup_ui(self):
         """Initialize the UI with animations"""
@@ -529,6 +720,9 @@ class ProcessingWidget(QWidget):
         # Store current processor for script switching
         self.current_processor = processor
         
+        # Enhance script dropdown with tooltips, recent prioritization, and set default selection
+        self._enhance_script_dropdown(processor, set_default_selection=True)
+        
         # Show processing view
         logger.debug("Showing processing view")
         self.show_processing_view()
@@ -597,6 +791,9 @@ class ProcessingWidget(QWidget):
                 self.params_scroll.setWidget(new_params_widget)
                 self.params_widget = new_params_widget
                 
+                # Enhance script dropdown with tooltips and recent prioritization (but don't override user selection)
+                self._enhance_script_dropdown(self.current_processor, set_default_selection=False)
+                
                 logger.debug("Parameter widget recreated with new script parameters")
                 
             except Exception as e:
@@ -645,6 +842,12 @@ class ProcessingWidget(QWidget):
         logger.info(f"DEBUG PROCESSING WIDGET: current_data shape={self.current_data.shape if self.current_data is not None else 'None'}")
         self.pipeline.process_data(processor_id, self.current_data, params, self.current_input_file)
         logger.info(f"DEBUG PROCESSING WIDGET: pipeline.process_data call completed")
+        
+        # Track script usage for session and recent scripts
+        script_id = params.get('script_selection', {}).get('script_name', {}).get('value')
+        if script_id and self.current_processor:
+            self.set_last_used_script(self.current_processor.processor_type, script_id, params)
+            self._save_recent_script(self.current_processor.processor_type, script_id)
         
     def cancel_processing(self):
         """Cancel current processing"""

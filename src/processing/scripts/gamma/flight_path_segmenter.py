@@ -28,7 +28,7 @@ import tempfile
 import os
 import utm
 
-from ...base import ScriptInterface, ProcessingResult, ProcessingError
+from ...base import ScriptInterface, ProcessingResult, ProcessingError, ScriptMetadata
 
 
 class GammaFlightPathSegmenter(ScriptInterface):
@@ -190,6 +190,15 @@ class GammaFlightPathSegmenter(ScriptInterface):
                 }
             }
         }
+    
+    def get_metadata(self) -> ScriptMetadata:
+        return ScriptMetadata(
+            description="Segments gamma survey flight paths into directional segments based on heading analysis",
+            flags=["preprocessing", "qc", "advanced"],
+            typical_use_case="Quality control and segmentation of grid-pattern gamma surveys",
+            field_compatible=True,
+            estimated_runtime="1-2 minutes"
+        )
     
     def validate_data(self, data: pd.DataFrame) -> bool:
         """Validate that data has required columns for gamma flight path segmentation"""
