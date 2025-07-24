@@ -28,7 +28,7 @@ from scipy.ndimage import uniform_filter1d
 import tempfile
 import os
 
-from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError
+from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError, ScriptMetadata
 
 
 class FlightPathSegmenter(ScriptInterface):
@@ -162,6 +162,15 @@ class FlightPathSegmenter(ScriptInterface):
                 }
             }
         }
+    
+    def get_metadata(self) -> ScriptMetadata:
+        return ScriptMetadata(
+            description="Segments flight paths into directional segments based on heading analysis",
+            flags=["preprocessing", "qc"],
+            typical_use_case="Quality control and segmentation of flight paths",
+            field_compatible=True,
+            estimated_runtime="<30 seconds"
+        )
     
     def validate_data(self, data: pd.DataFrame) -> bool:
         """Validate that data has required columns for flight path segmentation"""

@@ -20,7 +20,7 @@ import time
 import multiprocessing as mp
 from functools import partial
 
-from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError
+from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError, ScriptMetadata
 
 # Top-level functions for multiprocessing to avoid pickling issues
 def _find_closest_time_index(target_time, times):
@@ -185,6 +185,15 @@ class MagbaseProcessing(ScriptInterface):
                 }
             }
         }
+    
+    def get_metadata(self) -> ScriptMetadata:
+        return ScriptMetadata(
+            description="Applies magnetic base station corrections and removes diurnal variations",
+            flags=["preprocessing", "field-use"],
+            typical_use_case="First step in magnetic data processing to remove background variations",
+            field_compatible=True,
+            estimated_runtime="< 1 minute"
+        )
     
     def validate_data(self, data: pd.DataFrame) -> bool:
         """Validate MagWalk data structure using the flexible column detector."""

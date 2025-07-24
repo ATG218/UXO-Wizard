@@ -48,6 +48,14 @@ The current framework has been enhanced with several key features:
 - **Smart Output Management**: Avoids redundant file creation for scripts that handle their own outputs
 - **Integrated Metadata**: Processing metadata is embedded directly into results instead of separate JSON files
 
+#### **Enhanced Script Experience (2025)**
+- **Rich Script Tooltips**: Hover over scripts in the dropdown to see detailed metadata including description, tags, runtime estimates, and typical use cases
+- **Recent Script Prioritization**: Recently used scripts appear at the top of the dropdown for quick access
+- **Smart Default Selection**: The most recently used script is automatically selected when opening the processing dialog
+- **Quick Re-run**: Right-click any file in Project Explorer and select "Run Previous (script_name)" to instantly re-run the last used processing script with saved parameters
+- **Session Memory**: The system remembers your last used script and parameters during the current session
+- **Persistent Recent Scripts**: Recent script usage is saved to application settings and persists across restarts (limited to 5 most recent per processor type)
+
 #### **Layer System Integration**
 - **Automatic Layer Creation**: Processing outputs automatically become map layers
 - **Norwegian UTM Support**: Automatic coordinate system detection (zones 32-35)
@@ -519,11 +527,101 @@ Users can access saved plots in multiple ways:
 - **Performance**: Plot generation is optional and can be toggled off for large datasets
 - **Memory management**: Plots are saved immediately and don't consume memory long-term
 
-## 4. Enhanced Layer Generation System
+## 4. Script Metadata System
+
+All processing scripts must implement the `get_metadata()` method to provide rich information for users. This system enhances the user experience by providing detailed script information, tooltips, and intelligent script ordering.
+
+### 4.1 ScriptMetadata Structure
+
+The `ScriptMetadata` dataclass provides structured information about your script:
+
+```python
+from src.processing.base import ScriptMetadata
+
+def get_metadata(self) -> ScriptMetadata:
+    return ScriptMetadata(
+        description="Brief description of what this script does",
+        flags=["tag1", "tag2", "tag3"],
+        typical_use_case="When and why to use this script",
+        field_compatible=True,  # Can be run in field conditions
+        estimated_runtime="< 30 seconds"  # User-friendly time estimate
+    )
+```
+
+### 4.2 Available Flags
+
+Use appropriate flags to help users find the right scripts:
+
+- **`visualization`** - Produces plots, maps, or visual outputs
+- **`field-use`** - Optimized for field conditions (fast, simple interface)
+- **`preprocessing`** - Data cleaning, corrections, initial processing
+- **`analysis`** - Core analytical processing and calculations
+- **`export`** - Data export, formatting, or conversion
+- **`qc`** - Quality control, validation, or diagnostic tools
+- **`advanced`** - Requires expertise or complex configuration
+- **`batch`** - Suitable for processing multiple files
+
+### 4.3 Best Practices
+
+1. **Descriptions**: Write clear, concise descriptions focusing on what the script does
+2. **Use Cases**: Explain when and why someone would use this script
+3. **Runtime Estimates**: Provide realistic time estimates for typical data sizes
+4. **Field Compatibility**: Mark scripts as field-compatible only if they're fast and simple
+5. **Advanced Flag**: Use the "advanced" flag for scripts requiring expertise or complex configuration
+
+### 4.4 Example Implementations
+
+#### Basic Processing Script
+```python
+def get_metadata(self) -> ScriptMetadata:
+    return ScriptMetadata(
+        description="Basic magnetic data processing with column operations and statistics",
+        flags=["preprocessing", "field-use"],
+        typical_use_case="Simple data processing and initial exploration",
+        field_compatible=True,
+        estimated_runtime="< 30 seconds"
+    )
+```
+
+#### Advanced Analysis Script
+```python
+def get_metadata(self) -> ScriptMetadata:
+    return ScriptMetadata(
+        description="Detects and highlights magnetic anomalies using statistical analysis",
+        flags=["analysis", "visualization", "advanced"],
+        typical_use_case="Identifying potential targets after preprocessing and corrections",
+        field_compatible=False,
+        estimated_runtime="2-5 minutes"
+    )
+```
+
+#### Field-Compatible Visualization
+```python
+def get_metadata(self) -> ScriptMetadata:
+    return ScriptMetadata(
+        description="Creates visual flight path plots and interactive maps for survey data",
+        flags=["visualization", "field-use", "qc"],
+        typical_use_case="Visualizing drone flight paths and data coverage for quality control",
+        field_compatible=True,
+        estimated_runtime="< 30 seconds"
+    )
+```
+
+### 4.5 How Metadata Enhances User Experience
+
+The metadata system provides several user experience improvements:
+
+- **Rich Tooltips**: Users see detailed information when hovering over scripts in the dropdown
+- **Intelligent Ordering**: Recently used scripts appear first, followed by alphabetical ordering
+- **Smart Defaults**: The most recently used script is automatically selected
+- **Quick Re-run**: Context menu allows instant re-running with saved parameters
+- **Field Workflow**: Field-compatible scripts are clearly identified for field use
+
+## 5. Enhanced Layer Generation System
 
 The UXO-Wizard now includes a powerful modular layer generation system that automatically converts your processing outputs into interactive map layers. This system provides universal layer creation methods that all processors inherit from the `BaseProcessor` class.
 
-### 4.1 Automatic Layer Creation
+### 5.1 Automatic Layer Creation
 
 When your script generates `LayerOutput` objects using `result.add_layer_output()`, the system automatically:
 
@@ -534,7 +632,7 @@ When your script generates `LayerOutput` objects using `result.add_layer_output(
 5. **Displays in real-time**: Layers appear immediately in the map interface
 6. **Uses custom names**: Specify `layer_name` in metadata for custom layer names
 
-### 4.2 Supported Layer Types
+### 5.2 Supported Layer Types
 
 #### Point Layers (`layer_type='points'`)
 For coordinate-based data points:
@@ -619,7 +717,7 @@ result.add_layer_output(
 )
 ```
 
-### 4.3 Inherited Layer Methods
+### 5.3 Inherited Layer Methods
 
 All processors inherit universal layer generation methods from `BaseProcessor`. While you typically use `result.add_layer_output()`, these methods are available for advanced use cases:
 
@@ -680,7 +778,7 @@ def _generate_comprehensive_layers(self, data, result, params):
         )
 ```
 
-### 4.4 Styling Guidelines by Processor Type
+### 5.4 Styling Guidelines by Processor Type
 
 #### Magnetic Data
 ```python
@@ -712,7 +810,7 @@ style_info = {
 }
 ```
 
-### 4.5 Norwegian UTM Coordinate Support
+### 5.5 Norwegian UTM Coordinate Support
 
 The system automatically handles Norwegian UTM zones (32, 33, 34, 35):
 
@@ -731,7 +829,7 @@ The system automatically handles Norwegian UTM zones (32, 33, 34, 35):
 # EPSG:25834 (UTM 34N), EPSG:25835 (UTM 35N)
 ```
 
-### 4.6 Layer Grouping and Organization
+### 5.6 Layer Grouping and Organization
 
 Layers are automatically organized in the LayerManager based on:
 
@@ -744,7 +842,7 @@ Example layer groups:
 - "Survey Data" (for raw data visualizations)
 - "Annotations" (for user-added layers)
 
-### 4.7 Performance Considerations
+### 5.7 Performance Considerations
 
 - **Point limits**: Keep point layers under 10,000 points for performance
 - **Clustering**: Enable clustering for dense point data

@@ -86,6 +86,20 @@ except Exception as e:
     NORWEGIAN_CRS = "EPSG:25833"
 
 
+@dataclass
+class ScriptMetadata:
+    """Metadata for processing scripts to enhance user experience"""
+    description: str = "Processing script"
+    flags: List[str] = None  # e.g., ["visualization", "field-use", "advanced"]
+    typical_use_case: str = "General data processing"
+    field_compatible: bool = True
+    estimated_runtime: str = "< 1 minute"  # User-friendly time estimate
+    
+    def __post_init__(self):
+        if self.flags is None:
+            self.flags = []
+
+
 class ProcessingError(Exception):
     """Custom exception for processing errors"""
     pass
@@ -233,6 +247,11 @@ class ScriptInterface(ABC):
         Returns:
             ProcessingResult with success status, output files, and layer data
         """
+        pass
+    
+    @abstractmethod
+    def get_metadata(self) -> ScriptMetadata:
+        """Return metadata for this script including description, flags, and usage info"""
         pass
     
     def validate_data(self, data: pd.DataFrame) -> bool:
@@ -530,6 +549,36 @@ class BaseProcessor(ABC):
             for script_id, script in self.available_scripts.items()
         ]
     
+    def get_script_metadata(self, script_name: str) -> Optional[ScriptMetadata]:
+        """Get metadata for a specific script"""
+        if script_name in self.available_scripts:
+            try:
+                return self.available_scripts[script_name].get_metadata()
+            except Exception as e:
+                logger.warning(f"Failed to get metadata for script '{script_name}': {e}")
+                return ScriptMetadata(description="Script description unavailable")
+        return None
+
+    def get_scripts_with_recent_priority(self, recent_scripts: List[str] = None) -> dict:
+        """Get available scripts with recent scripts prioritized at the top"""
+        if recent_scripts is None:
+            recent_scripts = []
+        
+        all_scripts = self.available_scripts
+        ordered_scripts = {}
+        
+        # Add recent scripts first (that still exist)
+        for script_name in recent_scripts:
+            if script_name in all_scripts:
+                ordered_scripts[script_name] = all_scripts[script_name]
+        
+        # Add remaining scripts alphabetically
+        remaining_scripts = {k: v for k, v in all_scripts.items() if k not in ordered_scripts}
+        for script_name in sorted(remaining_scripts.keys()):
+            ordered_scripts[script_name] = remaining_scripts[script_name]
+        
+        return ordered_scripts
+    
     def set_script(self, script_id: str) -> None:
         """Set current script and update parameters"""
         if script_id in self.available_scripts:
@@ -584,8 +633,31 @@ class BaseProcessor(ABC):
         """Define processing parameters with defaults and metadata"""
         # If we have scripts, set up script-based parameters
         if self.available_scripts:
-            # Use first available script as default
-            default_script = list(self.available_scripts.keys())[0]
+            # Use most recent script as default, fallback to first alphabetical
+            from PySide6.QtCore import QSettings
+            import json
+            
+            try:
+                settings = QSettings("UXO-Wizard", "Desktop-Suite")
+                recent_json = settings.value(f"recent_scripts/{self.processor_type}", "[]")
+                recent_scripts = json.loads(recent_json)
+                
+                # Find the first recent script that still exists
+                default_script = None
+                for script_name in recent_scripts:
+                    if script_name in self.available_scripts:
+                        default_script = script_name
+                        break
+                
+                # Fallback to first available script alphabetically
+                if not default_script:
+                    default_script = list(self.available_scripts.keys())[0]
+                
+                    
+            except Exception:
+                # Fallback if settings access fails
+                default_script = list(self.available_scripts.keys())[0]
+                
             return self._generate_script_parameters(default_script)
         else:
             # Fallback to base parameters if no scripts available
