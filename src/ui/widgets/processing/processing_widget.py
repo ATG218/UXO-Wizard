@@ -217,11 +217,39 @@ class ParameterWidget(QWidget):
         elif param_type == 'file':
             # Create file selection widget
             widget = self._create_file_widget(param_info, value)
+        elif param_type == 'directory':
+            # Create directory selection widget
+            widget = self._create_directory_widget(param_info, value)
         else:
             widget = QLabel(str(value))
             
         return widget
         
+    def _create_directory_widget(self, param_info: Dict[str, Any], value: str) -> QWidget:
+        """Create a directory selection widget with a browse button."""
+        dir_widget = QWidget()
+        dir_layout = QHBoxLayout()
+        dir_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Line edit for directory path
+        dir_line_edit = QLineEdit()
+        dir_line_edit.setText(str(value) if value else "")
+        dir_line_edit.setPlaceholderText("Select directory...")
+        dir_line_edit.setMinimumWidth(200)
+        dir_layout.addWidget(dir_line_edit)
+
+        # Browse button
+        browse_button = QPushButton("Browse...")
+        browse_button.setMaximumWidth(80)
+
+        dir_widget._line_edit = dir_line_edit
+        browse_button.clicked.connect(lambda: self._browse_directory(dir_widget))
+        dir_layout.addWidget(browse_button)
+
+        dir_widget.setLayout(dir_layout)
+        dir_widget.dir_line_edit = dir_line_edit  # For value retrieval
+        return dir_widget
+
     def _create_file_widget(self, param_info: Dict[str, Any], value: str) -> QWidget:
         """Create a file selection widget with browse button"""
         file_widget = QWidget()
@@ -260,6 +288,28 @@ class ParameterWidget(QWidget):
         
         return file_widget
     
+    def _browse_directory(self, dir_widget: QWidget):
+        """Handle directory browsing for directory widgets."""
+        try:
+            logger.debug("Opening directory browser.")
+            parent_window = self.parent()
+            while parent_window.parent():
+                parent_window = parent_window.parent()
+
+            dir_path = QFileDialog.getExistingDirectory(
+                parent_window,
+                "Select Directory",
+                dir_widget._line_edit.text() or "",
+            )
+
+            if dir_path:
+                dir_widget._line_edit.setText(dir_path)
+                logger.info(f"Selected directory: {dir_path}")
+            else:
+                logger.debug("Directory dialog was cancelled.")
+        except Exception as e:
+            logger.error(f"Error in directory browser: {e}", exc_info=True)
+
     def _browse_file(self, file_widget: QWidget):
         """Handle file browsing for file widgets"""
         try:
@@ -310,6 +360,10 @@ class ParameterWidget(QWidget):
             widget.file_line_edit.textChanged.connect(
                 lambda val: self.value_changed.emit(category, param_name, val)
             )
+        elif hasattr(widget, 'dir_line_edit'):  # Directory widget
+            widget.dir_line_edit.textChanged.connect(
+                lambda val: self.value_changed.emit(category, param_name, val)
+            )
             
     def get_parameters(self) -> Dict[str, Any]:
         """Get current parameter values"""
@@ -328,6 +382,8 @@ class ParameterWidget(QWidget):
                     value = widget.currentText()
                 elif hasattr(widget, 'file_line_edit'):  # File widget
                     value = widget.file_line_edit.text()
+                elif hasattr(widget, 'dir_line_edit'): # Directory widget
+                    value = widget.dir_line_edit.text()
                 else:
                     value = param_info.get('value')
                     

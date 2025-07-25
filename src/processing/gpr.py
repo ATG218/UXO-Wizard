@@ -1,11 +1,9 @@
 """
-Ground Penetrating Radar (GPR) data processing
+Ground Penetrating Radar (GPR) data processing for UXO detection - Script Integration Framework
 """
 
 import pandas as pd
 import numpy as np
-from scipy import signal
-from scipy.fft import fft, fftfreq
 from typing import Dict, Any, Optional, Callable
 from loguru import logger
 
@@ -13,210 +11,67 @@ from .base import BaseProcessor, ProcessingResult, ProcessingError
 
 
 class GPRProcessor(BaseProcessor):
-    """Processor for Ground Penetrating Radar data"""
+    """Processor for Ground Penetrating Radar data with script framework support"""
     
     def __init__(self, project_manager=None):
         super().__init__(project_manager=project_manager)
         self.name = "GPR Processor"
-        self.description = "Process GPR data for subsurface anomaly detection"
+        self.description = "Process GPR data using various processing scripts for UXO detection"
+        self.processor_type = "gpr"  # Essential for script discovery
+        self.required_columns = []  # Will be detected automatically
         
     def _define_parameters(self) -> Dict[str, Any]:
-        """Define GPR processing parameters"""
+        """Define parameters - now handled by script framework"""
+        # Let the base class handle script-based parameter generation
+        if self.available_scripts:
+            # Use first available script as default
+            default_script = list(self.available_scripts.keys())[0]
+            return self._generate_script_parameters(default_script)
+        else:
+            # Fallback to base parameters if no scripts available
+            return self._define_base_parameters()
+        
+    def _define_base_parameters(self) -> Dict[str, Any]:
+        """Define base GPR parameters for fallback"""
+        # Return minimal base parameters since actual processing is handled by scripts
         return {
-            'preprocessing': {
-                'remove_dc_bias': {
-                    'value': True,
-                    'type': 'bool',
-                    'description': 'Remove DC component from traces'
-                },
-                'time_zero_correction': {
-                    'value': True,
-                    'type': 'bool',
-                    'description': 'Adjust time zero position'
-                },
-                'background_removal': {
-                    'value': True,
-                    'type': 'bool',
-                    'description': 'Remove horizontal banding'
-                }
-            },
-            'filtering': {
-                'bandpass_low': {
-                    'value': 10.0,
-                    'type': 'float',
-                    'min': 1.0,
-                    'max': 100.0,
-                    'description': 'Low frequency cutoff (MHz)'
-                },
-                'bandpass_high': {
-                    'value': 500.0,
-                    'type': 'float',
-                    'min': 50.0,
-                    'max': 2000.0,
-                    'description': 'High frequency cutoff (MHz)'
-                },
-                'dewow': {
-                    'value': True,
-                    'type': 'bool',
-                    'description': 'Apply dewow filter'
-                }
-            },
-            'gain': {
-                'apply_gain': {
-                    'value': True,
-                    'type': 'bool',
-                    'description': 'Apply time-varying gain'
-                },
-                'gain_type': {
-                    'value': 'exponential',
+            'output_settings': {
+                'export_format': {
+                    'value': 'csv',
                     'type': 'choice',
-                    'choices': ['linear', 'exponential', 'agc'],
-                    'description': 'Type of gain function'
-                }
-            },
-            'migration': {
-                'apply_migration': {
-                    'value': False,
-                    'type': 'bool',
-                    'description': 'Apply Kirchhoff migration'
-                },
-                'velocity': {
-                    'value': 0.1,
-                    'type': 'float',
-                    'min': 0.05,
-                    'max': 0.3,
-                    'description': 'EM wave velocity (m/ns)'
+                    'choices': ['csv', 'xlsx', 'json'],
+                    'description': 'Primary output file format'
                 }
             }
         }
     
     def validate_data(self, data: pd.DataFrame) -> bool:
-        """Validate GPR data format"""
-        # Check for required columns
+        """Validate GPR data - basic checks for script integration"""
+        if data.empty:
+            raise ProcessingError("No data provided")
+            
+        # Basic column detection for GPR data
         detected = self.detect_columns(data)
+        logger.debug(f"Detected columns: {detected}")
         
-        # GPR data might have trace/sample columns or be in wide format
-        if 'gpr' not in detected:
-            # Look for trace data columns
-            trace_cols = [col for col in data.columns if 'trace' in col.lower() or 'sample' in col.lower()]
-            if not trace_cols:
-                raise ProcessingError("No GPR trace data detected")
+        # Check for basic data structure
+        if len(data.columns) < 2:
+            raise ProcessingError("Data must have at least 2 columns")
+        
+        # Look for GPR-specific indicators
+        gpr_indicators = ['gpr', 'trace', 'amplitude', 'sample', 'radar']
+        has_gpr_data = any(
+            any(indicator in str(col).lower() for indicator in gpr_indicators)
+            for col in data.columns
+        )
+        
+        # If no clear GPR indicators, check if data structure suggests trace data
+        if not has_gpr_data:
+            numeric_cols = data.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) < 10:  # GPR data typically has many traces/samples
+                logger.warning("Data may not be GPR trace data - consider checking format")
                 
         return True
     
-    def process(self, data: pd.DataFrame, params: Dict[str, Any], 
-                progress_callback: Optional[Callable] = None) -> ProcessingResult:
-        """Process GPR data"""
-        try:
-            if progress_callback:
-                progress_callback(0, "Starting GPR processing...")
-                
-            # Validate data
-            self.validate_data(data)
-            
-            # Prepare data
-            result_data = data.copy()
-            
-            # Detect GPR data columns
-            gpr_cols = [col for col in data.columns if any(
-                kw in col.lower() for kw in ['gpr', 'trace', 'amplitude', 'sample']
-            )]
-            
-            if not gpr_cols:
-                raise ProcessingError("No GPR data columns found")
-                
-            # Process each trace
-            if progress_callback:
-                progress_callback(20, "Preprocessing traces...")
-                
-            # Apply preprocessing
-            if params.get('preprocessing', {}).get('remove_dc_bias', {}).get('value', True):
-                for col in gpr_cols:
-                    if col in result_data.columns:
-                        result_data[col] = result_data[col] - result_data[col].mean()
-            
-            # Apply filtering
-            if progress_callback:
-                progress_callback(40, "Applying filters...")
-                
-            if params.get('filtering', {}).get('dewow', {}).get('value', True):
-                for col in gpr_cols:
-                    if col in result_data.columns:
-                        result_data[col] = self._dewow_filter(result_data[col].values)
-            
-            # Apply gain
-            if progress_callback:
-                progress_callback(60, "Applying gain correction...")
-                
-            if params.get('gain', {}).get('apply_gain', {}).get('value', True):
-                gain_type = params.get('gain', {}).get('gain_type', {}).get('value', 'exponential')
-                for col in gpr_cols:
-                    if col in result_data.columns:
-                        result_data[col] = self._apply_gain(result_data[col].values, gain_type)
-            
-            # Detect anomalies (simplified - look for high amplitude reflections)
-            if progress_callback:
-                progress_callback(80, "Detecting subsurface anomalies...")
-                
-            # Calculate envelope for anomaly detection
-            if gpr_cols:
-                primary_col = gpr_cols[0]
-                envelope = np.abs(signal.hilbert(result_data[primary_col].values))
-                result_data['gpr_envelope'] = envelope
-                
-                # Simple anomaly detection based on envelope threshold
-                threshold = np.percentile(envelope, 95)
-                result_data['is_anomaly'] = envelope > threshold
-                
-            if progress_callback:
-                progress_callback(100, "GPR processing complete!")
-                
-            # Prepare metadata
-            metadata = {
-                'processor': 'gpr',
-                'traces_processed': len(gpr_cols),
-                'anomalies_found': int(result_data.get('is_anomaly', pd.Series([False])).sum()),
-                'parameters': params
-            }
-            
-            return ProcessingResult(
-                success=True,
-                data=result_data,
-                metadata=metadata
-            )
-            
-        except Exception as e:
-            logger.error(f"GPR processing failed: {str(e)}")
-            return ProcessingResult(
-                success=False,
-                error_message=str(e)
-            )
-    
-    def _dewow_filter(self, trace: np.ndarray, window: int = 10) -> np.ndarray:
-        """Remove low-frequency wow from GPR trace"""
-        # Simple high-pass filter using running average
-        running_avg = np.convolve(trace, np.ones(window)/window, mode='same')
-        return trace - running_avg
-    
-    def _apply_gain(self, trace: np.ndarray, gain_type: str = 'exponential') -> np.ndarray:
-        """Apply time-varying gain to compensate for signal attenuation"""
-        n_samples = len(trace)
-        t = np.arange(n_samples)
-        
-        if gain_type == 'linear':
-            gain = 1 + t / n_samples * 5  # Linear gain up to 6x
-        elif gain_type == 'exponential':
-            gain = np.exp(t / n_samples * 2)  # Exponential gain
-        elif gain_type == 'agc':  # Automatic Gain Control
-            window = 50
-            gain = np.ones_like(trace)
-            for i in range(n_samples):
-                start = max(0, i - window // 2)
-                end = min(n_samples, i + window // 2)
-                local_max = np.max(np.abs(trace[start:end]))
-                if local_max > 0:
-                    gain[i] = 1.0 / local_max
-        else:
-            gain = np.ones_like(trace)
-            
-        return trace * gain 
+    # Note: The process method is now handled by the BaseProcessor script framework
+    # Individual processing scripts implement their own execute methods 

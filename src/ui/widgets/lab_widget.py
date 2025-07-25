@@ -7,6 +7,7 @@ import sys
 import subprocess
 import shutil
 import pandas as pd
+import numpy as np
 from pathlib import Path
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeView, QLabel, QPushButton,
@@ -303,7 +304,8 @@ class LabWidget(QWidget):
         # Set up filters to show relevant files
         self.file_model.setNameFilters([
             "*.py", "*.csv", "*.txt", "*.json", "*.png", "*.jpg", "*.tiff", 
-            "*.dat", "*.xyz", "*.las", "*.laz", "*.shp", "*.geojson", "*.mplplot"
+            "*.dat", "*.xyz", "*.las", "*.laz", "*.shp", "*.geojson", "*.mplplot",
+            "*.npz", "*.sgy", "*.SGY", "*.log"
         ])
         self.file_model.setNameFilterDisables(False)
         
@@ -656,7 +658,7 @@ class LabWidget(QWidget):
             open_action.triggered.connect(lambda: self.open_file(file_path))
             
             # Add process option for data files
-            if file_path.endswith(('.csv', '.txt', '.dat', '.json')):
+            if file_path.endswith(('.csv', '.txt', '.dat', '.json', '.npz')):
                 process_action = menu.addAction("⚡ Process...")
                 process_action.triggered.connect(lambda: self.process_file(file_path))
             
@@ -1032,6 +1034,15 @@ class LabWidget(QWidget):
                 return pd.read_csv(file_path)
             elif file_path.endswith('.json'):
                 return pd.read_json(file_path)
+            elif file_path.endswith('.npz'):
+                try:
+                    with np.load(file_path) as npz_file:
+                        main_array_key = max(npz_file.files, key=lambda k: npz_file[k].size)
+                        df = pd.DataFrame(npz_file[main_array_key])
+                        return df
+                except Exception as e:
+                    logger.error(f"Failed to load NPZ file {file_path}: {e}")
+                    raise ValueError(f"Could not read .npz file: {e}")
             else:
                 return None
         except Exception as e:

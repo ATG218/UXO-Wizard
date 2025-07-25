@@ -16,6 +16,7 @@ import shutil
 import pandas as pd
 from .processing.processing_dialog import ProcessingDialog
 from .processing.processing_widget import ProcessingWidget
+import numpy as np
 
 
 class ProjectExplorerProxyModel(QSortFilterProxyModel):
@@ -218,7 +219,8 @@ class ProjectExplorer(QWidget):
         self.source_model.setNameFilters([
             "*.csv", "*.txt", "*.dat", "*.xlsx", "*.xls",
             "*.json", "*.geojson", "*.shp", "*.tif", "*.tiff",
-            "*.png", "*.jpg", "*.jpeg", "*.uxo", "*.mplplot" # UXO project and plot files
+            "*.png", "*.jpg", "*.jpeg", "*.uxo", "*.mplplot", # UXO project and plot files
+            "*.npz", "*.sgy", "*.SGY", "*.log" # GPR data, output and log files
         ])
         self.source_model.setNameFilterDisables(False)  # Hide non-matching files
         
@@ -672,6 +674,20 @@ class ProjectExplorer(QWidget):
             return pd.read_excel(filepath)
         elif file_lower.endswith('.json'):
             return pd.read_json(filepath)
+        elif file_lower.endswith('.npz'):
+            try:
+                with np.load(filepath) as npz_file:
+                    # Assume the largest array is the main data
+                    main_array_key = max(npz_file.files, key=lambda k: npz_file[k].size)
+                    df = pd.DataFrame(npz_file[main_array_key])
+                    # Add other arrays as metadata if needed
+                    if hasattr(df, 'attrs'):
+                        df.attrs['source_file'] = filepath
+                        df.attrs['npz_arrays'] = npz_file.files
+                    return df
+            except Exception as e:
+                logger.error(f"Failed to load NPZ file {filepath}: {e}")
+                raise ValueError(f"Could not read .npz file: {e}")
         else:
             return None
 
@@ -686,7 +702,14 @@ class ProjectExplorer(QWidget):
             QMessageBox.warning(self, "Selection Error", "Cannot process directories.")
             return
         try:
-            df = self.load_dataframe(path)
+            df = None
+            # For file types that are not directly loaded as dataframes (like .npz),
+            # we can pass an empty dataframe and rely on the script to handle the file path.
+            if path.lower().endswith('.npz'):
+                df = pd.DataFrame()
+            else:
+                df = self.load_dataframe(path)
+
             if df is None:
                 raise ValueError("Unsupported file type for processing")
         except Exception as e:

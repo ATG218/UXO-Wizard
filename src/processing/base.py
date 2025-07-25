@@ -17,6 +17,7 @@ import sys
 import numpy as np
 from scipy.interpolate import griddata
 from scipy.spatial.distance import pdist
+from rpy2.robjects import numpy2ri
 
 # Try to import Numba for JIT compilation
 try:
@@ -305,68 +306,71 @@ class ProcessingWorker(QThread):
         """Run the processing in background thread"""
         logger.info(f"DEBUG: ProcessingWorker.run() started")
         try:
-            start_time = time.time()
-            
-            # Create progress callback
-            def progress_callback(value: int, message: str = ""):
-                if self._is_cancelled:
-                    raise ProcessingError("Processing cancelled by user")
-                self.progress.emit(value)
-                if message:
-                    self.status.emit(message)
-            
-            # Run the processor with progress callback
-            result = self.processor_func(
-                self.data, 
-                self.params,
-                progress_callback=progress_callback,
-                input_file_path=self.input_file_path
-            )
-            
-            result.processing_time = time.time() - start_time
-            
-            # DEBUG: Check processing result
-            logger.info(f"DEBUG ProcessingWorker: result.success={result.success}")
-            logger.info(f"DEBUG ProcessingWorker: result.layer_outputs count={len(result.layer_outputs) if result.layer_outputs else 'None'}")
-            logger.info(f"DEBUG ProcessingWorker: processor_instance={self.processor_instance is not None}")
-            
-            # Convert LayerOutput objects to UXOLayer objects and emit them
-            if result.success and result.layer_outputs:
-                logger.info(f"Processing result has {len(result.layer_outputs)} layer outputs, LAYER_SYSTEM_AVAILABLE={LAYER_SYSTEM_AVAILABLE}")
-                if not LAYER_SYSTEM_AVAILABLE:
-                    logger.error("LAYER SYSTEM NOT AVAILABLE - This is why layers are not appearing on the map!")
-                    logger.error("Layer creation skipped because layer system imports failed")
-                    return
-                    
-                if self.processor_instance:
-                    for layer_output in result.layer_outputs:
-                        try:
-                            logger.info(f"Converting layer output: {layer_output.layer_type}")
-                            uxo_layer = self._convert_layer_output_to_uxo_layer(layer_output, result)
-                            if uxo_layer:
-                                self.layer_created.emit(uxo_layer)
-                                logger.info(f"✓ Created and emitted layer: {uxo_layer.name}")
-                            else:
-                                logger.error(f"✗ _convert_layer_output_to_uxo_layer returned None for layer_type: {layer_output.layer_type}")
-                        except Exception as e:
-                            logger.error(f"✗ Failed to create layer for {layer_output.layer_type}: {str(e)}")
-                            import traceback
-                            logger.error(traceback.format_exc())
-                else:
-                    logger.warning("No processor instance available for layer creation")
-            elif result.success and not result.layer_outputs:
-                logger.info("Processing successful but no layer outputs generated")
-            elif not result.success:
-                logger.info("Processing failed, no layer creation attempted")
-            
-            self.finished.emit(result)
-            
+            # Ensure rpy2 conversion context is active in this thread
+            with numpy2ri.converter.context():
+                start_time = time.time()
+                
+                # Create progress callback
+                def progress_callback(value: int, message: str = ""):
+                    if self._is_cancelled:
+                        raise ProcessingError("Processing cancelled by user")
+                    self.progress.emit(value)
+                    if message:
+                        self.status.emit(message)
+                
+                # Run the processor with progress callback
+                result = self.processor_func(
+                    self.data, 
+                    self.params,
+                    progress_callback=progress_callback,
+                    input_file_path=self.input_file_path
+                )
+                
+                result.processing_time = time.time() - start_time
+                
+                # DEBUG: Check processing result
+                logger.info(f"DEBUG ProcessingWorker: result.success={result.success}")
+                logger.info(f"DEBUG ProcessingWorker: result.layer_outputs count={len(result.layer_outputs) if result.layer_outputs else 'None'}")
+                logger.info(f"DEBUG ProcessingWorker: processor_instance={self.processor_instance is not None}")
+                
+                # Convert LayerOutput objects to UXOLayer objects and emit them
+                if result.success and result.layer_outputs:
+                    logger.info(f"Processing result has {len(result.layer_outputs)} layer outputs, LAYER_SYSTEM_AVAILABLE={LAYER_SYSTEM_AVAILABLE}")
+                    if not LAYER_SYSTEM_AVAILABLE:
+                        logger.error("LAYER SYSTEM NOT AVAILABLE - This is why layers are not appearing on the map!")
+                        logger.error("Layer creation skipped because layer system imports failed")
+                        return
+                        
+                    if self.processor_instance:
+                        for layer_output in result.layer_outputs:
+                            try:
+                                logger.info(f"Converting layer output: {layer_output.layer_type}")
+                                uxo_layer = self._convert_layer_output_to_uxo_layer(layer_output, result)
+                                if uxo_layer:
+                                    self.layer_created.emit(uxo_layer)
+                                    logger.info(f"✓ Created and emitted layer: {uxo_layer.name}")
+                                else:
+                                    logger.error(f"✗ _convert_layer_output_to_uxo_layer returned None for layer_type: {layer_output.layer_type}")
+                            except Exception as e:
+                                logger.error(f"✗ Failed to create layer for {layer_output.layer_type}: {str(e)}")
+                                import traceback
+                                logger.error(traceback.format_exc())
+                    else:
+                        logger.warning("No processor instance available for layer creation")
+                elif result.success and not result.layer_outputs:
+                    logger.info("Processing successful but no layer outputs generated")
+                elif not result.success:
+                    logger.info("Processing failed, no layer creation attempted")
+                
+                self.finished.emit(result)
         except Exception as e:
-            logger.error(f"Processing error: {str(e)}")
-            self.error.emit(str(e))
+            # Add more context to the error message
+            error_message = f"GPR processing failed: \n{str(e)}"
+            logger.error(f"Processing failed: {error_message}", exc_info=True)
             self.finished.emit(ProcessingResult(
-                success=False,
-                error_message=str(e)
+                success=False, 
+                error_message=error_message,
+                processor_type=self.processor_instance.processor_type if hasattr(self.processor_instance, 'processor_type') else 'unknown'
             ))
     
     def _convert_layer_output_to_uxo_layer(self, layer_output: LayerOutput, result: ProcessingResult) -> Optional['UXOLayer']:
@@ -675,6 +679,7 @@ class BaseProcessor(ABC):
     def process(self, data: pd.DataFrame, params: Dict[str, Any], 
                 progress_callback: Optional[Callable] = None, input_file_path: Optional[str] = None) -> ProcessingResult:
         """Enhanced process method that handles script execution"""
+        script_id = None  # Initialize script_id
         try:
             if progress_callback:
                 progress_callback(0, "Starting processing...")
@@ -774,7 +779,7 @@ class BaseProcessor(ABC):
         
         for col_type, keywords in patterns.items():
             for col in data.columns:
-                col_lower = col.lower()
+                col_lower = str(col).lower()
                 if any(kw in col_lower for kw in keywords):
                     detected[col_type] = col
                     break
@@ -1377,269 +1382,3 @@ class BaseProcessor(ABC):
                 progress_callback(85, "Minimum curvature interpolation complete")
         
         return grid_X, grid_Y, grid_z
-    
-    def _minimum_curvature_hard_constraints(self, x, y, z, grid_X, grid_Y, grid_z,
-                                           max_iterations, tolerance, omega, progress_callback):
-        """Minimum curvature with hard constraints (traditional style)"""
-        if progress_callback:
-            progress_callback(20, "Setting up hard constraints...")
-        
-        # Create mask for data points
-        ny, nx = grid_z.shape
-        constraint_mask = np.zeros((ny, nx), dtype=bool)
-        
-        # Find nearest grid points for each data point
-        x_min, x_max = np.min(grid_X), np.max(grid_X)
-        y_min, y_max = np.min(grid_Y), np.max(grid_Y)
-        
-        for i in range(len(x)):
-            # Convert data point to grid indices
-            j = int(round((x[i] - x_min) / (x_max - x_min) * (nx - 1)))
-            i_idx = int(round((y[i] - y_min) / (y_max - y_min) * (ny - 1)))
-            
-            # Clamp to valid range
-            j = max(0, min(nx - 1, j))
-            i_idx = max(0, min(ny - 1, i_idx))
-            
-            # Set constraint
-            constraint_mask[i_idx, j] = True
-            grid_z[i_idx, j] = z[i]
-        
-        if progress_callback:
-            progress_callback(40, "Starting minimum curvature iterations with hard constraints...")
-        
-        # Iterative minimum curvature with hard constraints
-        for iteration in range(max_iterations):
-            max_change = 0.0
-            
-            # Update interior points using 5-point stencil
-            for i in range(1, ny-1):
-                for j in range(1, nx-1):
-                    if not constraint_mask[i, j]:  # Skip constrained points
-                        old_value = grid_z[i, j]
-                        
-                        # 5-point stencil for Laplacian
-                        neighbors = (grid_z[i+1, j] + grid_z[i-1, j] + 
-                                   grid_z[i, j+1] + grid_z[i, j-1]) / 4.0
-                        
-                        # Successive over-relaxation
-                        new_value = old_value + omega * (neighbors - old_value)
-                        grid_z[i, j] = new_value
-                        
-                        # Track maximum change
-                        change = abs(new_value - old_value)
-                        if change > max_change:
-                            max_change = change
-            
-            # Apply boundary conditions
-            self._apply_boundary_conditions_numba(grid_z)
-            
-            # Progress update
-            if progress_callback:
-                progress = 40 + 40 * ((iteration + 1) / max_iterations)
-                progress_callback(int(progress), f"Iteration {iteration+1}/{max_iterations}, max change: {max_change:.2e}")
-            
-            # Check for convergence
-            if max_change < tolerance:
-                if progress_callback:
-                    progress_callback(80, f"Converged after {iteration+1} iterations")
-                break
-        
-        if progress_callback:
-            progress_callback(85, "Minimum curvature interpolation complete")
-        
-        return grid_X, grid_Y, grid_z
-    
-    def create_boundary_mask(self, x, y, grid_x, grid_y, method='convex_hull'):
-        """
-        Create a boundary mask to prevent interpolation outside data coverage.
-        
-        Args:
-            x, y: Data point coordinates
-            grid_x, grid_y: Grid meshgrid coordinates
-            method: 'convex_hull' or 'alpha_shape'
-        
-        Returns:
-            mask: Boolean array where True indicates points inside the data boundary
-        """
-        if not SCIPY_AVAILABLE:
-            # Return all True mask if scipy is not available
-            return np.ones(grid_x.shape, dtype=bool)
-        
-        try:
-            # Get data points as array
-            data_points = np.column_stack([x, y])
-            
-            # Get grid points as array
-            grid_points = np.column_stack([grid_x.ravel(), grid_y.ravel()])
-            
-            if method == 'convex_hull':
-                # Create convex hull
-                hull = ConvexHull(data_points)
-                
-                # Check which grid points are inside the convex hull
-                hull_path = MplPath(data_points[hull.vertices])
-                mask_1d = hull_path.contains_points(grid_points)
-                
-            elif method == 'alpha_shape':
-                # Simple distance-based approach as alpha shape approximation
-                # For each grid point, check if it's within reasonable distance of data
-                distances = cdist(grid_points, data_points)
-                min_distances = np.min(distances, axis=1)
-                
-                # Use median nearest neighbor distance as threshold
-                nn_distances = []
-                for i in range(len(data_points)):
-                    dists = cdist([data_points[i]], data_points)[0]
-                    dists = dists[dists > 0]  # Remove self-distance
-                    if len(dists) > 0:
-                        nn_distances.append(np.min(dists))
-                
-                threshold = np.median(nn_distances) * 2.0 if nn_distances else 0.01
-                mask_1d = min_distances <= threshold
-            
-            else:
-                raise ValueError(f"Unknown boundary method: {method}")
-            
-            # Reshape to grid shape
-            mask = mask_1d.reshape(grid_x.shape)
-            
-            return mask
-            
-        except Exception:
-            # Fallback to no masking
-            return np.ones(grid_x.shape, dtype=bool)
-    
-    @jit(nopython=True, cache=True)
-    def _create_influence_weights_numba(self, x, y, z, grid_x_coords, grid_y_coords, influence_radius):
-        """
-        JIT-compiled function to create influence weights and target values for soft constraints.
-        
-        Args:
-            x, y, z: Data point coordinates and values (1D arrays)
-            grid_x_coords, grid_y_coords: Grid coordinate arrays (1D arrays)
-            influence_radius: Influence radius for soft constraints
-        
-        Returns:
-            influence_weights: 2D array of influence weights
-            target_values: 2D array of target values
-        """
-        ny = len(grid_y_coords)
-        nx = len(grid_x_coords)
-        
-        influence_weights = np.zeros((ny, nx))
-        target_values = np.zeros((ny, nx))
-        
-        # Grid spacing
-        dx = grid_x_coords[1] - grid_x_coords[0] if nx > 1 else 1.0
-        dy = grid_y_coords[1] - grid_y_coords[0] if ny > 1 else 1.0
-        
-        # For each data point, create influence zone
-        for data_idx in range(len(x)):
-            xi, yi, zi = x[data_idx], y[data_idx], z[data_idx]
-            
-            # Convert to grid coordinates
-            gi = (yi - grid_y_coords[0]) / dy
-            gj = (xi - grid_x_coords[0]) / dx
-            
-            # Calculate grid range that could be influenced
-            i_min = max(0, int(gi - influence_radius/dy))
-            i_max = min(ny, int(gi + influence_radius/dy) + 1)
-            j_min = max(0, int(gj - influence_radius/dx))
-            j_max = min(nx, int(gj + influence_radius/dx) + 1)
-            
-            # Create influence zone around this data point
-            for i in range(i_min, i_max):
-                for j in range(j_min, j_max):
-                    # Calculate distance from grid point to data point
-                    grid_y_coord = grid_y_coords[i]
-                    grid_x_coord = grid_x_coords[j]
-                    distance = np.sqrt((grid_x_coord - xi)**2 + (grid_y_coord - yi)**2)
-                    
-                    if distance <= influence_radius:
-                        # Gaussian-like weight function
-                        weight = np.exp(-(distance / (influence_radius * 0.3))**2)
-                        
-                        # Accumulate weighted influence
-                        old_weight = influence_weights[i, j]
-                        new_weight = old_weight + weight
-                        
-                        if new_weight > 0:
-                            # Weighted average of target values
-                            target_values[i, j] = (target_values[i, j] * old_weight + zi * weight) / new_weight
-                            influence_weights[i, j] = new_weight
-        
-        return influence_weights, target_values
-    
-    @jit(nopython=True, cache=True)
-    def _minimum_curvature_iteration_numba(self, grid_z, influence_weights, target_values, 
-                                          omega, min_allowed, max_allowed):
-        """
-        JIT-compiled function for a single minimum curvature iteration with soft constraints.
-        
-        Args:
-            grid_z: Current grid values (modified in-place)
-            influence_weights: Influence weights for soft constraints
-            target_values: Target values for soft constraints
-            omega: Relaxation factor
-            min_allowed, max_allowed: Value bounds for stability
-        
-        Returns:
-            max_change: Maximum change in this iteration
-        """
-        ny, nx = grid_z.shape
-        max_change = 0.0
-        
-        # Update interior points using 5-point stencil with soft constraints
-        for i in range(1, ny-1):
-            for j in range(1, nx-1):
-                old_value = grid_z[i, j]
-                
-                # 5-point stencil for Laplacian
-                neighbors = (grid_z[i+1, j] + grid_z[i-1, j] + 
-                           grid_z[i, j+1] + grid_z[i, j-1]) / 4.0
-                
-                # Successive over-relaxation
-                new_value = old_value + omega * (neighbors - old_value)
-                
-                # Apply soft data constraint if there's influence at this point
-                if influence_weights[i, j] > 0.01:  # Only apply if significant influence
-                    constraint_strength = influence_weights[i, j] * 0.1  # Reduce constraint strength
-                    target = target_values[i, j]
-                    # Blend the relaxed value with the target value
-                    new_value = new_value * (1 - constraint_strength) + target * constraint_strength
-                
-                # Clamp values for stability
-                new_value = max(min_allowed, min(max_allowed, new_value))
-                
-                grid_z[i, j] = new_value
-                
-                # Track maximum change
-                change = abs(new_value - old_value)
-                if change > max_change:
-                    max_change = change
-        
-        return max_change
-    
-    @jit(nopython=True, cache=True)
-    def _apply_boundary_conditions_numba(self, grid_z):
-        """
-        JIT-compiled function to apply boundary conditions (zero second derivative).
-        
-        Args:
-            grid_z: Grid values (modified in-place)
-        """
-        ny, nx = grid_z.shape
-        
-        # Apply boundary conditions
-        if ny >= 3:
-            # Top and bottom boundaries (zero second derivative)
-            for j in range(nx):
-                grid_z[0, j] = 2*grid_z[1, j] - grid_z[2, j]
-                grid_z[ny-1, j] = 2*grid_z[ny-2, j] - grid_z[ny-3, j]
-        
-        if nx >= 3:
-            # Left and right boundaries (zero second derivative)
-            for i in range(ny):
-                grid_z[i, 0] = 2*grid_z[i, 1] - grid_z[i, 2]
-                grid_z[i, nx-1] = 2*grid_z[i, nx-2] - grid_z[i, nx-3] 

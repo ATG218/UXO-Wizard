@@ -110,6 +110,7 @@ interactive_plots/
 filtered/
 processing_results/
 Plots/
+*.disabled
 
 # Office documents
 *.docx
