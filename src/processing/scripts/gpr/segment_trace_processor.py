@@ -23,7 +23,6 @@ import matplotlib.pyplot as plt
 import pickle
 from typing import Dict, Any, Optional, Callable
 from loguru import logger
-from rpy2.rinterface import SexpS4
 from rpy2.rinterface_lib.embedded import RRuntimeError
 
 from src.processing.base import ScriptInterface, ProcessingResult, ProcessingError, ScriptMetadata
@@ -84,20 +83,27 @@ class SegmentTraceProcessor(ScriptInterface):
         """Defines the parameters for the processor."""
         # A default list of available methods.
         available_methods = [
-            "t0_correction", "dewow", "bandpass_filter", "background_removal", 
-            "amplitude_correction", "t0_correction_rgpr", "bandpass_filter_rgpr", 
-            "amplitude_correction_rgpr"
+            "resample_profile",
+            "dc_shift_correction_rgpr",
+            "t0_correction",
+            "t0_correction_rgpr",
+            "lowpass_filter",
+            "hipass_filter",
+            "bandpass_filter",
+            "bandpass_filter_rgpr",
+            "background_removal",
+            "background_removal_rgpr",
+            "horizontal_filter",
+            "horizontal_filter_rgpr",
+            "dewow",
+            "amplitude_correction",
+            "amplitude_correction_rgpr",
+            "power_gain_rgpr",
+            "mixed_phase_deconvolution_rgpr",
+            "kirchoff_migration_rgpr"
         ]
         
         params = {
-            'input_data': {
-                'npz_file': {
-                    'value': '',
-                    'type': 'file',
-                    'file_types': ['.npz'],
-                    'description': 'Select the processed .npz project file.'
-                }
-            },
             'target_selection': {
                 'segment_number': {
                     'value': 1,
@@ -118,7 +124,7 @@ class SegmentTraceProcessor(ScriptInterface):
         # Dynamically create checkboxes for each processing step
         for method in available_methods:
             params['processing_steps'][method] = {
-                'value': True if 'rgpr' in method else False, # Default to some RGPR steps as in notes
+                'value': False,
                 'type': 'bool',
                 'description': f'Enable {method.replace("_", " ").title()}'
             }
@@ -138,14 +144,15 @@ class SegmentTraceProcessor(ScriptInterface):
         try:
             # --- 1. Extract Parameters ---
             if progress_callback: progress_callback(5, "Loading parameters...")
-            # Prioritize the direct file path from the framework over UI parameters
-            npz_file = input_file_path or params.get('input_data', {}).get('npz_file', {}).get('value')
+            # The input file is now passed directly from the framework
+            npz_file = input_file_path
+            
+            if not npz_file or not Path(npz_file).exists():
+                raise FileNotFoundError("A valid input .npz file is required but was not provided by the framework.")
+
             segment_num = params.get('target_selection', {}).get('segment_number', {}).get('value')
             trace_num = params.get('target_selection', {}).get('trace_number', {}).get('value')
             
-            if not npz_file or not isinstance(npz_file, str) or not Path(npz_file).exists():
-                raise FileNotFoundError(f"Input .npz file is invalid or not found: {npz_file}")
-
             output_dir = Path(npz_file).parent
             
             # --- 2. Load Data ---

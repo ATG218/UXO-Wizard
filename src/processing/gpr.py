@@ -33,17 +33,8 @@ class GPRProcessor(BaseProcessor):
         
     def _define_base_parameters(self) -> Dict[str, Any]:
         """Define base GPR parameters for fallback"""
-        # Return minimal base parameters since actual processing is handled by scripts
-        return {
-            'output_settings': {
-                'export_format': {
-                    'value': 'csv',
-                    'type': 'choice',
-                    'choices': ['csv', 'xlsx', 'json'],
-                    'description': 'Primary output file format'
-                }
-            }
-        }
+        # No base parameters needed for GPR as scripts define everything.
+        return {}
     
     def validate_data(self, data: pd.DataFrame) -> bool:
         """Validate GPR data - basic checks for script integration"""

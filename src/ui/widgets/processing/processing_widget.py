@@ -6,14 +6,15 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QComboBox, QProgressBar, QGroupBox, QScrollArea,
     QCheckBox, QSlider, QSpinBox, QDoubleSpinBox, QFrame,
-    QGraphicsOpacityEffect, QStackedWidget, QLineEdit, QFileDialog
+    QGraphicsOpacityEffect, QStackedWidget, QLineEdit, QFileDialog,
+    QListWidget, QListWidgetItem, QAbstractItemView
 )
 from PySide6.QtCore import (
     Qt, Signal, QPropertyAnimation, QEasingCurve,
     QParallelAnimationGroup, QSequentialAnimationGroup,
-    QTimer, Property, QCoreApplication, QSettings
+    QTimer, Property, QCoreApplication, QSettings, QMimeData
 )
-from PySide6.QtGui import QPalette, QFont
+from PySide6.QtGui import QPalette, QFont, QDrag
 import pandas as pd
 from typing import Dict, Any, Optional, List
 from loguru import logger
@@ -22,6 +23,54 @@ from datetime import datetime
 
 from ....processing import ProcessingPipeline, ProcessingResult
 from ....processing.base import ScriptMetadata
+
+
+class ReorderableProcessingStepsWidget(QListWidget):
+    """Custom list widget that allows drag-and-drop reordering of processing steps"""
+    
+    steps_reordered = Signal(list)  # Emits the new order of step names
+    
+    def __init__(self):
+        super().__init__()
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+        self.setDefaultDropAction(Qt.MoveAction)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setAlternatingRowColors(True)
+        self.setMinimumHeight(150)
+        self.setMaximumHeight(300)
+        
+    def dropEvent(self, event):
+        """Handle drop event and emit reordered signal"""
+        super().dropEvent(event)
+        # Get the new order of items
+        new_order = []
+        for i in range(self.count()):
+            item = self.item(i)
+            if item and hasattr(item, 'step_name'):
+                new_order.append(item.step_name)
+        self.steps_reordered.emit(new_order)
+        
+    def set_processing_steps(self, steps_dict: Dict[str, Any]):
+        """Set the processing steps and their enabled state"""
+        self.clear()
+        
+        # Add items for enabled steps only
+        enabled_steps = [name for name, config in steps_dict.items() if config.get('value', False)]
+        
+        for step_name in enabled_steps:
+            item = QListWidgetItem(step_name.replace('_', ' ').title())
+            item.step_name = step_name
+            item.setFlags(item.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
+            self.addItem(item)
+    
+    def get_ordered_steps(self) -> List[str]:
+        """Get the current order of processing steps"""
+        order = []
+        for i in range(self.count()):
+            item = self.item(i)
+            if item and hasattr(item, 'step_name'):
+                order.append(item.step_name)
+        return order
 
 
 class AnimatedProgressBar(QProgressBar):
@@ -154,7 +203,9 @@ class ParameterWidget(QWidget):
         super().__init__()
         self.parameters = parameters
         self.widgets = {}
+        self.groups = {}  # To hold QGroupBoxes by category name
         self.setup_ui()
+        self._init_group_visibility()
         
     def setup_ui(self):
         """Create parameter controls"""
@@ -164,26 +215,71 @@ class ParameterWidget(QWidget):
         # Create groups for each category
         for category, params in self.parameters.items():
             group = QGroupBox(category.replace('_', ' ').title())
+            self.groups[category] = group # Store group for visibility control
             group_layout = QVBoxLayout()
             
-            for param_name, param_info in params.items():
-                param_layout = QHBoxLayout()
+            # Special handling for processing_steps to add reordering capability
+            if category == 'processing_steps':
+                # Add checkboxes for enabling/disabling steps
+                checkbox_layout = QVBoxLayout()
+                for param_name, param_info in params.items():
+                    param_layout = QHBoxLayout()
+                    
+                    # Label
+                    label = QLabel(param_info['description'])
+                    label.setWordWrap(True)
+                    label.setMinimumWidth(150)
+                    param_layout.addWidget(label)
+                    
+                    # Create checkbox widget
+                    widget = QCheckBox()
+                    widget.setChecked(param_info.get('value', False))
+                    self.widgets[f"{category}.{param_name}"] = widget
+                    param_layout.addWidget(widget)
+                    
+                    # Connect change signal
+                    self._connect_widget_signal(widget, category, param_name)
+                    
+                    checkbox_layout.addLayout(param_layout)
                 
-                # Label
-                label = QLabel(param_info['description'])
-                label.setWordWrap(True)
-                label.setMinimumWidth(150)
-                param_layout.addWidget(label)
+                group_layout.addLayout(checkbox_layout)
                 
-                # Create appropriate widget based on type
-                widget = self._create_param_widget(param_info)
-                self.widgets[f"{category}.{param_name}"] = widget
-                param_layout.addWidget(widget)
+                # Add reorderable list for processing sequence
+                order_label = QLabel("Processing Order (drag to reorder):")
+                order_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+                group_layout.addWidget(order_label)
                 
-                # Connect change signal
-                self._connect_widget_signal(widget, category, param_name)
+                self.processing_order_widget = ReorderableProcessingStepsWidget()
+                self.processing_order_widget.steps_reordered.connect(self._on_steps_reordered)
+                group_layout.addWidget(self.processing_order_widget)
                 
-                group_layout.addLayout(param_layout)
+                # Update the order widget when checkboxes change
+                for param_name in params.keys():
+                    widget_key = f"processing_steps.{param_name}"
+                    if widget_key in self.widgets:
+                        checkbox = self.widgets[widget_key]
+                        checkbox.toggled.connect(self._update_processing_order_widget)
+                
+            else:
+                # Regular parameter handling for non-processing_steps categories
+                for param_name, param_info in params.items():
+                    param_layout = QHBoxLayout()
+                    
+                    # Label
+                    label = QLabel(param_info['description'])
+                    label.setWordWrap(True)
+                    label.setMinimumWidth(150)
+                    param_layout.addWidget(label)
+                    
+                    # Create appropriate widget based on type
+                    widget = self._create_param_widget(param_info)
+                    self.widgets[f"{category}.{param_name}"] = widget
+                    param_layout.addWidget(widget)
+                    
+                    # Connect change signal
+                    self._connect_widget_signal(widget, category, param_name)
+                    
+                    group_layout.addLayout(param_layout)
                 
             group.setLayout(group_layout)
             layout.addWidget(group)
@@ -191,6 +287,10 @@ class ParameterWidget(QWidget):
         layout.addStretch()
         self.setLayout(layout)
         
+        # Initialize the processing order widget if it exists
+        if hasattr(self, 'processing_order_widget'):
+            self._update_processing_order_widget()
+            
     def _create_param_widget(self, param_info: Dict[str, Any]) -> QWidget:
         """Create appropriate widget for parameter type"""
         param_type = param_info.get('type', 'float')
@@ -208,7 +308,13 @@ class ParameterWidget(QWidget):
             widget = QDoubleSpinBox()
             widget.setMinimum(param_info.get('min', 0.0))
             widget.setMaximum(param_info.get('max', 100.0))
-            widget.setDecimals(3)
+            decimals = param_info.get('decimals', 3)
+            widget.setDecimals(decimals)
+            
+            # Set single step based on decimals or explicit step parameter
+            step = param_info.get('step', 10 ** -decimals)
+            widget.setSingleStep(step)
+            
             widget.setValue(value)
         elif param_type == 'choice':
             widget = QComboBox()
@@ -348,6 +454,11 @@ class ParameterWidget(QWidget):
             widget.toggled.connect(
                 lambda val: self.value_changed.emit(category, param_name, val)
             )
+            # If the checkbox is a processing step, connect it to the visibility toggle
+            if category == 'processing_steps':
+                widget.toggled.connect(
+                    lambda checked, p=param_name: self._update_group_visibility(p, checked)
+                )
         elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
             widget.valueChanged.connect(
                 lambda val: self.value_changed.emit(category, param_name, val)
@@ -365,6 +476,27 @@ class ParameterWidget(QWidget):
                 lambda val: self.value_changed.emit(category, param_name, val)
             )
             
+    def _update_processing_order_widget(self):
+        """Update the processing order widget when checkboxes change"""
+        if hasattr(self, 'processing_order_widget'):
+            processing_steps = self.parameters.get('processing_steps', {})
+            current_states = {}
+            
+            # Get current checkbox states
+            for step_name in processing_steps.keys():
+                widget_key = f"processing_steps.{step_name}"
+                if widget_key in self.widgets:
+                    checkbox = self.widgets[widget_key]
+                    current_states[step_name] = {'value': checkbox.isChecked()}
+            
+            self.processing_order_widget.set_processing_steps(current_states)
+    
+    def _on_steps_reordered(self, new_order: List[str]):
+        """Handle when processing steps are reordered"""
+        logger.debug(f"Processing steps reordered: {new_order}")
+        # Store the new order for later retrieval
+        self._processing_order = new_order
+        
     def get_parameters(self) -> Dict[str, Any]:
         """Get current parameter values"""
         result = {}
@@ -388,8 +520,65 @@ class ParameterWidget(QWidget):
                     value = param_info.get('value')
                     
                 result[category][param_name] = {'value': value}
+        
+        # Add processing order information if available
+        if hasattr(self, '_processing_order') and self._processing_order:
+            if 'processing_steps' not in result:
+                result['processing_steps'] = {}
+            result['processing_order'] = {'value': self._processing_order}
                 
         return result
+
+    def _get_controlled_group_name(self, processing_step_name: str) -> Optional[str]:
+        """Maps a processing step name to the parameter group it controls."""
+        # Example: 't0_correction_rgpr' controls the 't0_correction' group.
+        
+        # Direct match
+        if processing_step_name in self.groups:
+            return processing_step_name
+            
+        # Match by removing '_rgpr' suffix
+        base_name = processing_step_name.replace('_rgpr', '')
+        if base_name in self.groups:
+            return base_name
+            
+        return None
+
+    def _update_group_visibility(self, processing_step_name: str, is_checked: bool):
+        """Shows or hides a parameter group based on a processing step's checkbox."""
+        controlled_group_name = self._get_controlled_group_name(processing_step_name)
+        
+        if controlled_group_name and controlled_group_name in self.groups:
+            group = self.groups[controlled_group_name]
+            # Make sure we don't accidentally hide the main processing steps group
+            if controlled_group_name != 'processing_steps':
+                group.setVisible(is_checked)
+                logger.debug(f"Set visibility of group '{controlled_group_name}' to {is_checked} for step '{processing_step_name}'")
+
+    def _init_group_visibility(self):
+        """Sets the initial visibility of all controlled parameter groups."""
+        logger.debug("Initializing parameter group visibility.")
+        
+        # Get all available processing steps from the parameters
+        processing_steps = self.parameters.get('processing_steps', {}).keys()
+        
+        # Identify all parameter groups that are controlled by these steps
+        controlled_groups = set()
+        for step_name in processing_steps:
+            controlled_group_name = self._get_controlled_group_name(step_name)
+            if controlled_group_name:
+                controlled_groups.add(controlled_group_name)
+
+        # Hide only the controlled groups initially
+        for group_name in controlled_groups:
+            if group_name in self.groups:
+                self.groups[group_name].hide()
+
+        # Show groups for steps that are checked by default when the widget loads
+        processing_steps_params = self.parameters.get('processing_steps', {})
+        for step_name, step_params in processing_steps_params.items():
+            if step_params.get('value', False):
+                self._update_group_visibility(step_name, True)
 
 
 class ProcessingWidget(QWidget):
