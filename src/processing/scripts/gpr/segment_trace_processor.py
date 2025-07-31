@@ -13,7 +13,7 @@ Workflow:
 5.  Generate and save two plots:
     - A profile of the entire segment for context.
     - A power spectrum comparison of the raw vs. processed trace.
-6.  Outputs are saved as .mplplot files in the same directory as the input .npz file.
+6.  Outputs are saved as .mplplot files in project/processed/gpr/ following framework structure.
 """
 
 from pathlib import Path
@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import pickle
+import datetime
 from typing import Dict, Any, Optional, Callable
 from loguru import logger
 from rpy2.rinterface_lib.embedded import RRuntimeError
@@ -32,7 +33,6 @@ try:
     from src.processing.scripts.gpr.utils.GPRdataSegmentProcessor import GPRdataSegmentProcessor
     from src.processing.scripts.gpr.utils.gpr_configs import ProcessingConfig
     GPR_UTILS_AVAILABLE = True
-    print("GPR_UTILS_AVAILABLE: True")
 except ImportError as e:
     logger.warning(f"Could not import GPR utilities for SegmentTraceProcessor: {e}. The script will be unavailable.", exc_info=True)
     ProjectGPRdata = ProcessingConfig = GPRdataSegmentProcessor = object
@@ -131,7 +131,32 @@ class SegmentTraceProcessor(ScriptInterface):
         return params
 
     def validate_data(self, data: pd.DataFrame) -> bool:
+        # GPR trace processor works with .npz files via input_file_path
+        # DataFrame can be empty since we use the file path directly
         return True
+
+    def _create_output_directory(self, input_file_path: Optional[str], working_directory: Optional[str] = None) -> Path:
+        """Create output directory in project/processed/gpr/ following framework structure"""    
+        if input_file_path:
+            base_filename = Path(input_file_path).stem
+            project_dir = Path(working_directory) if working_directory else Path(input_file_path).parent
+            
+            # Navigate up to find project root if we're in a subdirectory
+            while project_dir != project_dir.parent:
+                if (project_dir / "processed").exists() or len(list(project_dir.glob("*.uxo"))) > 0:
+                    break
+                project_dir = project_dir.parent
+            
+            # Create project/processed/gpr/filename_analysis_timestamp structure
+            output_dir = project_dir / "processed" / "gpr" / f"{base_filename}_analysis_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        else:
+            # Fallback: use temp directory
+            import tempfile
+            temp_dir = tempfile.mkdtemp(prefix="gpr_processing_")
+            output_dir = Path(temp_dir)
+        
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
 
     def execute(self, data: pd.DataFrame, params: Dict[str, Any],
                 progress_callback: Optional[Callable] = None, input_file_path: Optional[str] = None) -> ProcessingResult:
@@ -139,7 +164,7 @@ class SegmentTraceProcessor(ScriptInterface):
         if not GPR_UTILS_AVAILABLE:
             raise ProcessingError("GPR processing utilities are not available. Please check dependencies.")
 
-        result = ProcessingResult(success=False, script_id=self.name)
+        result = ProcessingResult(success=False, processing_script=self.name)
         
         try:
             # --- 1. Extract Parameters ---
@@ -153,7 +178,8 @@ class SegmentTraceProcessor(ScriptInterface):
             segment_num = params.get('target_selection', {}).get('segment_number', {}).get('value')
             trace_num = params.get('target_selection', {}).get('trace_number', {}).get('value')
             
-            output_dir = Path(npz_file).parent
+            # Create output directory following framework structure
+            output_dir = self._create_output_directory(input_file_path, self.get_project_working_directory())
             
             # --- 2. Load Data ---
             if progress_callback: progress_callback(15, f"Loading data from {Path(npz_file).name}...")
@@ -249,6 +275,29 @@ class SegmentTraceProcessor(ScriptInterface):
             result.success = True
             result.message = (f"Successfully processed trace {trace_num} from segment {segment_num}. "
                               f"Plots saved to {output_dir.name} directory.")
+            
+            # Add comprehensive metadata
+            result.metadata = {
+                'processor': 'gpr',
+                'script_name': self.name,
+                'segment_number': segment_num,
+                'trace_number': trace_num,
+                'processing_steps': processing_order,
+                'processing_steps_count': len(processing_order),
+                'output_files_count': len(result.output_files),
+                'segment_data_shape': list(segment_data.shape),
+                'trace_data_length': len(raw_trace),
+                'processed_trace_length': len(processed_trace),
+                'processing_config': {
+                    'dt': process_config.dt,
+                    'visualization': {
+                        'plt_aspect': plt_aspect,
+                        'plt_perc': plt_perc
+                    }
+                },
+                'parameters': params  # Include all parameters used
+            }
+            
             logger.success(result.message)
 
         except RRuntimeError as r_err:

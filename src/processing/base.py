@@ -14,10 +14,36 @@ import os
 import glob
 import importlib.util
 import sys
+import pathlib
 import numpy as np
 from scipy.interpolate import griddata
 from scipy.spatial.distance import pdist
-from rpy2.robjects import numpy2ri
+# Import rpy2 with error handling for PyInstaller
+try:
+    # Ensure R environment is properly set before importing rpy2
+    import sys
+    if hasattr(sys, '_MEIPASS'):
+        import os
+        # Lock R_HOME to prevent conflicts
+        r_home = os.environ.get('R_HOME')
+        if r_home:
+            os.environ['RPY2_R_HOME'] = r_home
+            os.environ['RPY2_R_HOME_OVERRIDE'] = '0'
+    
+    from rpy2.robjects import numpy2ri
+except ImportError as e:
+    logger.warning(f"Failed to import rpy2: {e}")
+    # Create a dummy numpy2ri for graceful degradation
+    class DummyNumpy2ri:
+        @staticmethod
+        def activate():
+            pass
+        @staticmethod
+        def deactivate():
+            pass
+    numpy2ri = DummyNumpy2ri()
+import ast
+import re
 
 # Try to import Numba for JIT compilation
 try:
@@ -104,6 +130,16 @@ class ScriptMetadata:
 class ProcessingError(Exception):
     """Custom exception for processing errors"""
     pass
+
+
+@dataclass
+class ValidationResult:
+    """Result of script validation"""
+    valid: bool
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    missing_packages: List[str] = field(default_factory=list)
+    suggestion: Optional[str] = None
 
 
 @dataclass
@@ -280,6 +316,241 @@ class ScriptInterface(ABC):
             return working_dir
         print(f"DEBUG: ScriptInterface.get_project_working_directory() - no project_manager")
         return None
+
+
+class ExternalScriptValidator:
+    """Validator for external user scripts"""
+    
+    # Packages available in UXO Wizard after packaging
+    AVAILABLE_PACKAGES = {
+        # Data processing & analysis
+        'pandas', 'numpy', 'scipy', 'scikit-learn', 'scikit-image', 'joblib',
+        'networkx', 'statsmodels', 'numba',
+        
+        # Visualization & plotting
+        'matplotlib', 'plotly', 'seaborn', 'folium', 'branca', 
+        'ipywidgets', 'jupyter_client', 'ipython',
+        
+        # Geospatial & mapping
+        'geopandas', 'rasterio', 'fiona', 'shapely', 'pyproj', 'proj',
+        'gdal', 'pyogrio', 'contextily', 'geopy', 'geographiclib',
+        'xyzservices', 'mercantile', 'utm',
+        
+        # File I/O & formats
+        'openpyxl', 'xlrd', 'lxml', 'requests', 'h5py', 'netcdf4',
+        'pyarrow', 'fastparquet', 'fsspec', 'cramjam', 'tifffile',
+        
+        # Image processing
+        'PIL', 'Pillow', 'cv2', 'skimage', 'imageio', 'imagecodecs',
+        
+        # Scientific computing
+        'obspy', 'pywavelets', 'threadpoolctl',
+        
+        # R integration
+        'rpy2',
+        
+        # Database & connectivity
+        'sqlalchemy', 'psycopg2',
+        
+        # System utilities
+        'loguru', 'psutil', 'click', 'colorama', 'tqdm',
+        
+        # Development & debugging
+        'jupyter_core', 'ipykernel', 'debugpy', 'pexpect',
+        
+        # Web & networking
+        'urllib3', 'certifi', 'charset-normalizer', 'idna', 'pysocks',
+        
+        # Compression & encoding
+        'zstandard', 'brotli', 'lz4', 'snappy',
+        
+        # Text processing
+        'jinja2', 'markupsafe', 'pygments',
+        
+        # Configuration & serialization
+        'pyyaml', 'toml', 'tomli', 'configparser',
+        
+        # Date/time handling
+        'python-dateutil', 'pytz', 'tzdata', 'tzlocal',
+        
+        # Standard library (always available)
+        'os', 'sys', 'json', 'csv', 'datetime', 'time', 'math', 're', 'ast',
+        'collections', 'itertools', 'functools', 'pathlib', 'typing',
+        'subprocess', 'multiprocessing', 'threading', 'concurrent',
+        'tempfile', 'shutil', 'glob', 'fnmatch', 'tarfile', 'zipfile',
+        'urllib', 'http', 'email', 'xml', 'html', 'base64', 'hashlib',
+        'secrets', 'uuid', 'decimal', 'fractions', 'statistics',
+        'random', 'bisect', 'heapq', 'copy', 'pickle', 'shelve',
+        'sqlite3', 'dbm', 'zlib', 'gzip', 'bz2', 'lzma',
+        'wave', 'struct', 'codecs', 'locale', 'gettext',
+        'logging', 'warnings', 'traceback', 'inspect', 'dis',
+        'gc', 'weakref', 'contextvars', 'dataclasses', 'enum',
+        
+        # UXO Wizard internal (for script development)
+        'src'
+    }
+    
+    def validate_script(self, script_path: str) -> ValidationResult:
+        """Validate external script before loading"""
+        try:
+            with open(script_path, 'r', encoding='utf-8') as f:
+                script_content = f.read()
+            
+            # Parse AST for analysis
+            try:
+                tree = ast.parse(script_content)
+            except SyntaxError as e:
+                return ValidationResult(
+                    valid=False,
+                    errors=[f"Syntax error in script: {str(e)}"],
+                    suggestion="Fix syntax errors in your script"
+                )
+            
+            # Check imports
+            import_result = self._check_imports(tree, script_content)
+            if not import_result.valid:
+                return import_result
+            
+            # Check script structure
+            structure_result = self._check_script_structure(tree, script_content)
+            if not structure_result.valid:
+                return structure_result
+            
+            # Combine warnings from all checks
+            all_warnings = import_result.warnings + structure_result.warnings
+            
+            return ValidationResult(
+                valid=True,
+                warnings=all_warnings
+            )
+            
+        except Exception as e:
+            return ValidationResult(
+                valid=False,
+                errors=[f"Failed to validate script: {str(e)}"],
+                suggestion="Check that the script file is readable and properly formatted"
+            )
+    
+    def _check_imports(self, tree: ast.AST, script_content: str) -> ValidationResult:
+        """Check that all imports are available packages"""
+        imported_packages = set()
+        
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    # Handle cases like 'import numpy as np'
+                    package_name = alias.name.split('.')[0]
+                    imported_packages.add(package_name)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    # Handle cases like 'from scipy import stats'
+                    package_name = node.module.split('.')[0]
+                    imported_packages.add(package_name)
+        
+        # Check for unavailable packages
+        unavailable = imported_packages - self.AVAILABLE_PACKAGES
+        
+        # Special handling for common aliases
+        alias_mapping = {
+            'np': 'numpy',
+            'pd': 'pandas', 
+            'plt': 'matplotlib',
+            'sk': 'scikit-learn',
+            'cv2': 'opencv'
+        }
+        
+        # Remove packages that might be aliased
+        unavailable_filtered = set()
+        for pkg in unavailable:
+            if pkg not in alias_mapping.values():
+                unavailable_filtered.add(pkg)
+        
+        if unavailable_filtered:
+            missing_list = sorted(list(unavailable_filtered))
+            return ValidationResult(
+                valid=False,
+                errors=[f"Unavailable packages found: {', '.join(missing_list)}"],
+                missing_packages=missing_list,
+                suggestion="Remove unavailable packages or open a GitHub issue to request them. "
+                          "See README.md for list of available packages."
+            )
+        
+        # Check for potentially problematic imports
+        warnings = []
+        if 'subprocess' in imported_packages:
+            warnings.append("Script uses subprocess - ensure this is necessary and safe")
+        if 'eval' in script_content or 'exec' in script_content:
+            warnings.append("Script contains eval/exec - use with caution")
+        
+        return ValidationResult(valid=True, warnings=warnings)
+    
+    def _check_script_structure(self, tree: ast.AST, script_content: str) -> ValidationResult:
+        """Check that script has required structure"""
+        errors = []
+        warnings = []
+        
+        # Check for SCRIPT_CLASS export
+        has_script_class = False
+        script_class_name = None
+        
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == 'SCRIPT_CLASS':
+                        has_script_class = True
+                        # Try to get the class name
+                        if isinstance(node.value, ast.Name):
+                            script_class_name = node.value.id
+        
+        if not has_script_class:
+            errors.append("Script must export SCRIPT_CLASS at the end")
+        
+        # Find class definitions
+        class_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
+        
+        if not class_nodes:
+            errors.append("Script must contain at least one class definition")
+        else:
+            # Check if any class has required methods
+            script_interface_methods = {'name', 'description', 'get_metadata', 'get_parameters', 'execute'}
+            
+            valid_class_found = False
+            for class_node in class_nodes:
+                class_methods = {node.name for node in class_node.body if isinstance(node, ast.FunctionDef)}
+                
+                # Check for required methods (at least some of them)
+                if len(script_interface_methods.intersection(class_methods)) >= 3:
+                    valid_class_found = True
+                    
+                    # Check for required properties
+                    properties = []
+                    for node in class_node.body:
+                        if (isinstance(node, ast.FunctionDef) and 
+                            len(node.decorator_list) > 0):
+                            for decorator in node.decorator_list:
+                                if isinstance(decorator, ast.Name) and decorator.id == 'property':
+                                    properties.append(node.name)
+                    
+                    if 'name' not in properties:
+                        warnings.append(f"Class {class_node.name} should have 'name' as a property")
+                    if 'description' not in properties:
+                        warnings.append(f"Class {class_node.name} should have 'description' as a property")
+            
+            if not valid_class_found:
+                errors.append("No class found that implements ScriptInterface methods")
+        
+        # Check for common issues
+        if 'ScriptInterface' not in script_content:
+            warnings.append("Script should import ScriptInterface from src.processing.base")
+        
+        if 'ProcessingResult' not in script_content:
+            warnings.append("Script should import ProcessingResult from src.processing.base")
+        
+        return ValidationResult(
+            valid=len(errors) == 0,
+            errors=errors,
+            warnings=warnings
+        )
 
 
 class ProcessingWorker(QThread):
@@ -465,6 +736,7 @@ class BaseProcessor(ABC):
         
         # Script framework attributes
         self.processor_type = self._get_processor_type()
+        self.script_validator = ExternalScriptValidator()
         self.available_scripts = self._discover_scripts()
         self.current_script = None
         
@@ -480,78 +752,182 @@ class BaseProcessor(ABC):
         return class_name.lower()
     
     def _discover_scripts(self) -> Dict[str, 'ScriptInterface']:
-        """Auto-discover scripts specific to this processor type"""
+        """Auto-discover scripts from both internal and external locations"""
+        scripts = {}
+        
+        # Phase 1: Load internal scripts (bundled in executable)
+        internal_scripts = self._discover_internal_scripts()
+        scripts.update(internal_scripts)
+        
+        # Phase 2: Load external user scripts (can override internal ones)
+        external_scripts = self._discover_external_scripts()
+        scripts.update(external_scripts)  # External scripts take priority
+        
+        logger.info(f"Discovered {len(scripts)} scripts for {self.processor_type} processor")
+        logger.info(f"  - Internal: {len(internal_scripts)}")
+        logger.info(f"  - External: {len(external_scripts)}")
+        
+        return scripts
+    
+    def _discover_internal_scripts(self) -> Dict[str, 'ScriptInterface']:
+        """Auto-discover internal scripts specific to this processor type"""
         scripts = {}
         
         try:
-            # Get path to processor-specific scripts directory
+            # Get path to processor-specific scripts directory (internal)
             current_dir = os.path.dirname(os.path.abspath(__file__))
             scripts_dir = os.path.join(current_dir, 'scripts', self.processor_type)
             
             if not os.path.exists(scripts_dir):
-                logger.debug(f"Scripts directory not found: {scripts_dir}")
+                logger.debug(f"Internal scripts directory not found: {scripts_dir}")
                 return scripts
             
-            # Find all Python files in the scripts directory
-            script_files = sorted(glob.glob(os.path.join(scripts_dir, '*.py')))
-            
-            for script_file in script_files:
-                # Skip __init__.py files
-                if os.path.basename(script_file).startswith('__'):
-                    continue
-                
-                try:
-                    # Import the script module
-                    script_name = os.path.splitext(os.path.basename(script_file))[0]
-                    
-                    # Create a unique module name that reflects its path from the src directory
-                    module_name = f"src.processing.scripts.{self.processor_type}.{script_name}"
-                    
-                    # Load module from file with the unique name
-                    spec = importlib.util.spec_from_file_location(module_name, script_file)
-                    if spec and spec.loader:
-                        module = importlib.util.module_from_spec(spec)
-                        sys.modules[module_name] = module
-                        spec.loader.exec_module(module)
-                        
-                        # Look for SCRIPT_CLASS attribute
-                        if hasattr(module, 'SCRIPT_CLASS'):
-                            try:
-                                # Try to create script instance with project_manager parameter
-                                script_instance = module.SCRIPT_CLASS(project_manager=self.project_manager)
-                            except TypeError:
-                                # Fallback for older scripts that don't accept project_manager
-                                script_instance = module.SCRIPT_CLASS()
-                                # Manually set project_manager if the instance has this attribute
-                                if hasattr(script_instance, 'project_manager'):
-                                    script_instance.project_manager = self.project_manager
-                            
-                            if isinstance(script_instance, ScriptInterface):
-                                scripts[script_name] = script_instance
-                                logger.debug(f"Loaded script: {script_name} for {self.processor_type}")
-                            else:
-                                logger.warning(f"Script {script_name} does not implement ScriptInterface")
-                        else:
-                            logger.debug(f"Script {script_name} has no SCRIPT_CLASS attribute")
-                            
-                except Exception as e:
-                    logger.error(f"Failed to load script {script_file}: {str(e)}")
+            scripts = self._load_scripts_from_directory(scripts_dir, "internal")
+            logger.debug(f"Loaded {len(scripts)} internal scripts for {self.processor_type}")
                     
         except Exception as e:
-            logger.error(f"Failed to discover scripts for {self.processor_type}: {str(e)}")
+            logger.error(f"Failed to discover internal scripts for {self.processor_type}: {str(e)}")
         
         return scripts
     
+    def _discover_external_scripts(self) -> Dict[str, 'ScriptInterface']:
+        """Auto-discover external user scripts specific to this processor type"""
+        scripts = {}
+        
+        try:
+            # Use environment variable set by the PyInstaller hook, or default to "scripts"
+            scripts_root = pathlib.Path(os.environ.get("UXO_SCRIPTS_DIR", "scripts"))
+            
+            # External scripts are in the scripts root directory under processor type
+            external_scripts_dir = scripts_root / self.processor_type
+            
+            if not external_scripts_dir.exists():
+                logger.debug(f"External scripts directory not found: {external_scripts_dir}")
+                return scripts
+            
+            scripts = self._load_scripts_from_directory(str(external_scripts_dir), "external")
+            logger.debug(f"Loaded {len(scripts)} external scripts for {self.processor_type}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to discover external scripts for {self.processor_type}: {str(e)}")
+        
+        return scripts
+    
+    def _load_scripts_from_directory(self, scripts_dir: str, script_origin: str) -> Dict[str, 'ScriptInterface']:
+        """Load all scripts from a given directory"""
+        scripts = {}
+        
+        # Find all Python files in the scripts directory
+        script_files = sorted(glob.glob(os.path.join(scripts_dir, '*.py')))
+        
+        for script_file in script_files:
+            # Skip __init__.py files
+            if os.path.basename(script_file).startswith('__'):
+                continue
+            
+            try:
+                script_name = os.path.splitext(os.path.basename(script_file))[0]
+                script_instance = self._load_single_script(script_file, script_name, script_origin)
+                
+                if script_instance:
+                    # Add origin metadata to script instance
+                    script_instance._script_origin = script_origin
+                    script_instance._script_file_path = script_file
+                    scripts[script_name] = script_instance
+                    
+                    origin_label = "🔵 Internal" if script_origin == "internal" else "🟢 External"
+                    logger.debug(f"Loaded {origin_label} script: {script_name} for {self.processor_type}")
+                    
+            except Exception as e:
+                logger.error(f"Failed to load {script_origin} script {script_file}: {str(e)}")
+        
+        return scripts
+    
+    def _load_single_script(self, script_file: str, script_name: str, script_origin: str) -> Optional['ScriptInterface']:
+        """Load a single script file and return the script instance"""
+        try:
+            # Validate external scripts before loading
+            if script_origin == "external":
+                validation_result = self.script_validator.validate_script(script_file)
+                
+                if not validation_result.valid:
+                    logger.error(f"External script validation failed for {script_name}:")
+                    for error in validation_result.errors:
+                        logger.error(f"  - {error}")
+                    if validation_result.suggestion:
+                        logger.error(f"  Suggestion: {validation_result.suggestion}")
+                    return None
+                
+                # Log warnings for external scripts
+                if validation_result.warnings:
+                    logger.warning(f"External script {script_name} has warnings:")
+                    for warning in validation_result.warnings:
+                        logger.warning(f"  - {warning}")
+            
+            # Create a unique module name based on origin and path
+            if script_origin == "internal":
+                module_name = f"src.processing.scripts.{self.processor_type}.{script_name}"
+            else:
+                module_name = f"external.scripts.{self.processor_type}.{script_name}"
+            
+            # Load module from file with the unique name
+            spec = importlib.util.spec_from_file_location(module_name, script_file)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+                
+                # Look for SCRIPT_CLASS attribute
+                if hasattr(module, 'SCRIPT_CLASS'):
+                    try:
+                        # Try to create script instance with project_manager parameter
+                        script_instance = module.SCRIPT_CLASS(project_manager=self.project_manager)
+                    except TypeError:
+                        # Fallback for older scripts that don't accept project_manager
+                        script_instance = module.SCRIPT_CLASS()
+                        # Manually set project_manager if the instance has this attribute
+                        if hasattr(script_instance, 'project_manager'):
+                            script_instance.project_manager = self.project_manager
+                    
+                    if isinstance(script_instance, ScriptInterface):
+                        return script_instance
+                    else:
+                        logger.warning(f"Script {script_name} does not implement ScriptInterface")
+                else:
+                    logger.debug(f"Script {script_name} has no SCRIPT_CLASS attribute")
+                    
+        except Exception as e:
+            logger.error(f"Failed to load script {script_file}: {str(e)}")
+            
+        return None
+    
     def get_available_scripts(self) -> List[Dict[str, str]]:
         """Return list of scripts with metadata for UI dropdown"""
-        return [
-            {
+        scripts_list = []
+        for script_id, script in self.available_scripts.items():
+            script_info = {
                 'id': script_id,
                 'name': script.name,
-                'description': script.description
+                'description': script.description,
+                'origin': getattr(script, '_script_origin', 'unknown'),
+                'file_path': getattr(script, '_script_file_path', None)
             }
-            for script_id, script in self.available_scripts.items()
-        ]
+            
+            # Add origin indicator to name for UI display
+            if hasattr(script, '_script_origin'):
+                if script._script_origin == 'external':
+                    script_info['display_name'] = f"🟢 {script.name}"
+                    script_info['origin_label'] = "User Script"
+                else:
+                    script_info['display_name'] = f"🔵 {script.name}"
+                    script_info['origin_label'] = "Built-in Script"
+            else:
+                script_info['display_name'] = script.name
+                script_info['origin_label'] = "Unknown"
+            
+            scripts_list.append(script_info)
+        
+        return scripts_list
     
     def get_script_metadata(self, script_name: str) -> Optional[ScriptMetadata]:
         """Get metadata for a specific script"""
@@ -688,8 +1064,9 @@ class BaseProcessor(ABC):
             if input_file_path:
                 self.set_current_files([input_file_path])
             
-            # Validate data
-            self.validate_data(data)
+            # Validate data (skip if we have input_file_path and empty DataFrame)
+            if not (input_file_path and data.empty):
+                self.validate_data(data)
             
             # Get selected script
             script_id = params.get('script_selection', {}).get('script_name', {}).get('value')
@@ -828,7 +1205,7 @@ class BaseProcessor(ABC):
             'vector': LayerType.VECTOR,
             'flight_lines': LayerType.VECTOR,
             'flight_path': LayerType.VECTOR,
-            'processed': LayerType.POINTS,  # Processed data is still point data
+            'processed': LayerType.POINTS,
             'annotation': LayerType.ANNOTATION
         }
         
